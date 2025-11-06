@@ -29,6 +29,9 @@ chroma_service = ChromaService()
 llama_service = LlamaService()
 scoring_service = ScoringService()
 
+# Minimum similarity threshold to consider document relevant
+MIN_SIMILARITY_THRESHOLD = 0.3
+
 
 @router.post("/query", response_model=QueryResponse)
 async def submit_query(request: QueryRequest):
@@ -56,7 +59,31 @@ async def submit_query(request: QueryRequest):
                 detail="No relevant information found in knowledge base. Please upload documents first."
             )
         
-        # Step 2: Generate answer using Llama model
+        # Check if retrieved passages are actually relevant
+        max_similarity = max(p["similarity_score"] for p in retrieved_passages)
+        
+        logger.info(f"Top similarity score: {max_similarity:.2f}")
+        
+        # If no passage is sufficiently similar, the question is likely not in ground truth
+        if max_similarity < MIN_SIMILARITY_THRESHOLD:
+            logger.warning(f"Low similarity ({max_similarity:.2f}) - Question not in ground truth")
+            
+            # Generate answer anyway but mark as low confidence
+            answer = llama_service.generate_answer(request.question, context=None)
+            
+            response = QueryResponse(
+                question=request.question,
+                answer=answer + "\n\n⚠️ Note: This question may not be covered in the uploaded documents.",
+                confidence_score=0.0,
+                confidence_label="Low - Not in Ground Truth",
+                citations=[],
+                timestamp=datetime.now(),
+                processing_time_ms=round((time.time() - start_time) * 1000, 2)
+            )
+            
+            return response
+        
+        # Step 2: Generate answer using Llama model with context
         logger.info("Generating answer...")
         context = "\n\n".join([p["text"] for p in retrieved_passages])
         answer = llama_service.generate_answer(request.question, context)
@@ -75,6 +102,10 @@ async def submit_query(request: QueryRequest):
         else:
             confidence_label = "Low"
         
+        # Add warning if confidence is low but question matches documents
+        if confidence_score < 0.4 and max_similarity > MIN_SIMILARITY_THRESHOLD:
+            answer += "\n\n⚠️ Note: Low confidence - AI answer may not fully align with source documents."
+        
         # Calculate processing time
         processing_time = (time.time() - start_time) * 1000  # Convert to ms
         
@@ -90,6 +121,8 @@ async def submit_query(request: QueryRequest):
         )
         
         logger.info(f"Query processed successfully in {processing_time:.2f}ms")
+        logger.info(f"Confidence: {confidence_score:.2f} ({confidence_label})")
+        
         return response
         
     except HTTPException:

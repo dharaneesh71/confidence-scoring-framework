@@ -127,16 +127,35 @@ class ChromaService:
             passages = []
             if results['documents'] and results['documents'][0]:
                 for i, doc in enumerate(results['documents'][0]):
+                    # ChromaDB returns squared L2 distances
+                    # Convert to similarity: smaller distance = higher similarity
+                    distance = results['distances'][0][i]
+                    
+                    # Convert distance to similarity score (0 to 1)
+                    # Using exponential decay: similarity = exp(-distance)
+                    # This ensures: distance=0 → similarity=1, large distance → similarity≈0
+                    import math
+                    similarity = math.exp(-distance)
+                    
+                    # Clamp to [0, 1] range
+                    similarity = max(0.0, min(1.0, similarity))
+                    
                     passage = {
                         "text": doc,
                         "metadata": results['metadatas'][0][i],
-                        "similarity_score": 1 - results['distances'][0][i],  # Convert distance to similarity
+                        "similarity_score": similarity,
                         "source": results['metadatas'][0][i].get('source', 'unknown'),
                         "page": results['metadatas'][0][i].get('page', 0)
                     }
                     passages.append(passage)
             
             logger.info(f"Found {len(passages)} relevant passages for query")
+            
+            # Log similarity scores for debugging
+            if passages:
+                scores = [p['similarity_score'] for p in passages]
+                logger.info(f"Similarity scores: {scores}")
+            
             return passages
             
         except Exception as e:
