@@ -1,0 +1,29 @@
+# Core Framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+
+# Vector Database
+chromadb==0.5.3
+
+# NLP & Embeddings
+sentence-transformers==3.1.1
+nltk==3.9.1
+transformers==4.45.1
+
+# LLM Integration
+torch==2.5.0
+huggingface-hub==0.25.1
+
+# PDF Processing
+PyPDF2==3.0.1
+pdfplumber==0.11.4
+
+# Utilities
+python-dotenv==1.0.1
+pydantic==2.9.2
+pydantic-settings==2.5.2
+numpy==1.26.4
+
+# Development
+pytest==8.3.3
