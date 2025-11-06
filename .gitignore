@@ -277,8 +277,8 @@ htmlcov/
 .ipynb_checkpoints/
 
 # Model cache
-
-models/*.bin
-models/*.pt
-models/*.pth
+models/
+*.bin
+*.pt
+*.pth
 >>>>>>> fabbb26 (Initial commit: confidence scoring framework setup)
