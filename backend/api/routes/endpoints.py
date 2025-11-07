@@ -83,10 +83,10 @@ async def submit_query(request: QueryRequest):
             
             return response
         
-        # Step 2: Generate answer using Llama model with context
+        # Step 2: Generate answer using Llama model *without* context (RAG disabled as requested)
         logger.info("Generating answer...")
-        context = "\n\n".join([p["text"] for p in retrieved_passages])
-        answer = llama_service.generate_answer(request.question, context)
+        # context = "\n\n".join([p["text"] for p in retrieved_passages]) # RAG CONTEXT REMOVED
+        answer = llama_service.generate_answer(request.question, context=None) # Always call with None
         
         # Step 3: Compute confidence score
         logger.info("Computing confidence score...")

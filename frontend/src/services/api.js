@@ -11,7 +11,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 60000, // 60 seconds for model inference
+  timeout: 180000, // 60 seconds for model inference
 });
 
 /**
