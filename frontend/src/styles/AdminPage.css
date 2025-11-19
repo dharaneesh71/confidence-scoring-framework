@@ -1,6 +1,6 @@
 .admin-container {
   padding: 20px;
-  min-height: calc(100vh - 64px - 80px);
+  /* Removed specific min-height calculation here to allow content to flow naturally */
 }
 
 /* Login page specific styles */
@@ -8,7 +8,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100vh;
+  /* Ensures the login form is perfectly centered vertically and takes full viewport height */
+  min-height: 100vh; 
 }
 
 /* Upload area styles */

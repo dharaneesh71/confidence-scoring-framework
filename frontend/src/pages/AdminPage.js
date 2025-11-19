@@ -1,119 +1,94 @@
-/**
- * Admin Upload Page for adding documents to knowledge base
- */
 import React, { useState } from 'react';
 import {
-  Container,
-  Paper,
-  TextField,
-  Button,
-  Typography,
-  Box,
-  CircularProgress,
-  Alert,
-  Card,
-  CardContent,
-  List,
-  ListItem,
-  ListItemText,
-  Divider,
+  Container, Paper, TextField, Button, Typography, Box,
+  Alert, Card, CardContent, List, ListItem, ListItemText, Chip, useTheme
 } from '@mui/material';
-import { CloudUpload, CheckCircle, Login } from '@mui/icons-material';
+import { CloudUpload, Login } from '@mui/icons-material';
 import { uploadDocument, getStatus } from '../services/api';
 import '../styles/AdminPage.css';
 
 const AdminPage = () => {
+  const theme = useTheme();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
-  
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState(null);
+  const [uploadResult, setUploadResult] = useState({}); 
   const [uploadError, setUploadError] = useState(null);
-  const [systemStatus, setSystemStatus] = useState(null);
+  const [systemStatus, setSystemStatus] = useState({}); 
 
-  // Handle login
   const handleLogin = (e) => {
     e.preventDefault();
-    
-    // Simple validation (in production, validate against backend)
     if (username === 'admin' && password === 'admin123') {
-      setIsLoggedIn(true);
-      setLoginError('');
-      loadSystemStatus();
-    } else {
-      setLoginError('Invalid username or password');
-    }
+      setIsLoggedIn(true); setLoginError(''); loadSystemStatus();
+    } else { setLoginError('Invalid username or password'); }
   };
 
-  // Load system status
   const loadSystemStatus = async () => {
-    try {
-      const status = await getStatus();
-      setSystemStatus(status);
-    } catch (err) {
-      console.error('Failed to load status:', err);
-    }
+    try { const status = await getStatus(); setSystemStatus(status); } 
+    catch (err) { console.error(err); }
   };
 
-  // Handle file selection
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
-    if (file) {
-      if (file.type !== 'application/pdf') {
-        setUploadError('Only PDF files are allowed');
-        setSelectedFile(null);
-        return;
-      }
-      if (file.size > 10 * 1024 * 1024) {
-        setUploadError('File size must be less than 10MB');
-        setSelectedFile(null);
-        return;
-      }
-      setSelectedFile(file);
-      setUploadError(null);
-      setUploadResult(null);
-    }
+    if (file) { setSelectedFile(file); setUploadError(null); setUploadResult(null); }
   };
 
-  // Handle file upload
   const handleUpload = async () => {
     if (!selectedFile) return;
-
-    setUploading(true);
-    setUploadError(null);
-    setUploadResult(null);
-
+    setUploading(true); setUploadError(null); setUploadResult(null);
     try {
       const result = await uploadDocument(selectedFile, username, password);
-      setUploadResult(result);
-      setSelectedFile(null);
-      // Reset file input
-      document.getElementById('file-input').value = '';
-      // Reload status
-      loadSystemStatus();
-    } catch (err) {
-      setUploadError(err.message);
-    } finally {
-      setUploading(false);
+      setUploadResult(result); setSelectedFile(null); document.getElementById('file-input').value = ''; loadSystemStatus();
+    } catch (err) { setUploadError(err.message); } finally { setUploading(false); }
+  };
+
+  // Dynamic Card Style
+  const cardStyle = {
+    p: 4,
+    borderRadius: '20px',
+    border: `1px solid ${theme.palette.divider}`,
+    background: theme.palette.mode === 'dark' ? 'rgba(15, 23, 42, 0.8)' : 'rgba(255, 255, 255, 0.95)',
+    backdropFilter: 'blur(10px)',
+    boxShadow: theme.palette.mode === 'light' ? '0 4px 20px rgba(0,0,0,0.1)' : undefined
+  };
+
+  // Common Input Style for Glow Effect
+  const glowInputStyle = {
+    mb: 3,
+    '& .MuiOutlinedInput-root': {
+      backgroundColor: 'rgba(0,0,0,0.2)', // Slight dark tint inside
+      transition: 'all 0.3s ease-in-out',
+      // HOVER STATE (The "Light Up" Effect)
+      '&:hover fieldset': {
+        borderColor: 'secondary.main',
+        boxShadow: '0 0 15px rgba(77, 208, 225, 0.6)', // Glow on hover
+      },
+      // FOCUS STATE (Stronger Glow)
+      '&.Mui-focused fieldset': {
+        borderColor: 'secondary.main',
+        boxShadow: '0 0 25px rgba(77, 208, 225, 0.8)', // Intense glow on focus
+      },
+    },
+    // Label Styling
+    '& .MuiInputLabel-root': {
+      color: 'text.secondary',
+      '&.Mui-focused': { color: 'secondary.main' }
     }
   };
 
-  // Login Page
+  // LOGIN SCREEN
   if (!isLoggedIn) {
     return (
-      <Container maxWidth="sm" className="admin-container">
-        <Box sx={{ my: 8 }}>
-          <Paper elevation={3} sx={{ p: 4 }}>
+      <Container maxWidth="xs">
+        <Box sx={{ my: 5, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <Paper elevation={12} sx={cardStyle}>
             <Box sx={{ textAlign: 'center', mb: 3 }}>
-              <Login sx={{ fontSize: 60, color: 'primary.main', mb: 2 }} />
-              <Typography variant="h4" component="h1" gutterBottom>
-                Admin Login
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Sign in to upload documents to the knowledge base
+              <Login sx={{ fontSize: 50, color: 'secondary.main', mb: 1 }} />
+              <Typography variant="h5" sx={{ fontWeight: 700, color: 'text.primary' }}>
+                Admin Portal
               </Typography>
             </Box>
 
@@ -124,8 +99,7 @@ const AdminPage = () => {
                 variant="outlined"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                sx={{ mb: 2 }}
-                required
+                sx={glowInputStyle} // Applying the glow style here
               />
               <TextField
                 fullWidth
@@ -134,29 +108,27 @@ const AdminPage = () => {
                 variant="outlined"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                sx={{ mb: 3 }}
-                required
+                sx={glowInputStyle} // Applying the glow style here
               />
-              {loginError && (
-                <Alert severity="error" sx={{ mb: 2 }}>
-                  {loginError}
-                </Alert>
-              )}
-              <Button
-                type="submit"
-                variant="contained"
-                size="large"
-                fullWidth
-                startIcon={<Login />}
+              {loginError && <Alert severity="error" sx={{ mb: 2 }}>{loginError}</Alert>}
+              <Button 
+                type="submit" 
+                variant="contained" 
+                color="secondary" 
+                fullWidth 
+                size="large" 
+                sx={{ 
+                  fontWeight: 'bold', 
+                  color: 'white',
+                  boxShadow: '0 0 10px rgba(77, 208, 225, 0.4)', // Subtle glow for button too
+                  '&:hover': { boxShadow: '0 0 20px rgba(77, 208, 225, 0.7)' } 
+                }}
               >
-                Login
+                Sign In
               </Button>
             </form>
-
-            <Alert severity="info" sx={{ mt: 3 }}>
-              <strong>Demo Credentials:</strong><br />
-              Username: admin<br />
-              Password: admin123
+            <Alert severity="info" sx={{ mt: 3, py: 0, bgcolor: 'rgba(77, 208, 225, 0.1)', color: 'text.primary' }}>
+              <small>User: admin | Pass: admin123</small>
             </Alert>
           </Paper>
         </Box>
@@ -164,175 +136,44 @@ const AdminPage = () => {
     );
   }
 
-  // Main Admin Page
+  // MAIN ADMIN SCREEN
   return (
-    <Container maxWidth="lg" className="admin-container">
+    <Container maxWidth="lg">
       <Box sx={{ my: 4 }}>
-        {/* Header */}
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
-          <div>
-            <Typography variant="h3" component="h1" gutterBottom>
-              Admin Panel
-            </Typography>
-            <Typography variant="subtitle1" color="text.secondary">
-              Upload PDF documents to the knowledge base
-            </Typography>
-          </div>
-          <Button variant="outlined" onClick={() => setIsLoggedIn(false)}>
-            Logout
-          </Button>
+          <Typography variant="h4" sx={{ fontWeight: 800, color: 'text.primary' }}>Knowledge Base</Typography>
+          <Button variant="outlined" color="secondary" onClick={() => setIsLoggedIn(false)}>Logout</Button>
         </Box>
 
-        {/* System Status */}
-        {systemStatus && (
-          <Card sx={{ mb: 3 }}>
+        {/* Status Card */}
+        {systemStatus && systemStatus.status && (
+          <Card sx={{ ...cardStyle, mb: 4, borderLeft: `4px solid ${theme.palette.secondary.main}`, p: 0 }}>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                System Status
-              </Typography>
-              <List dense>
-                <ListItem>
-                  <ListItemText
-                    primary="Overall Status"
-                    secondary={systemStatus.status.toUpperCase()}
-                  />
-                </ListItem>
-                <ListItem>
-                  <ListItemText
-                    primary="Documents in Knowledge Base"
-                    secondary={systemStatus.documents_count}
-                  />
-                </ListItem>
-                <ListItem>
-                  <ListItemText
-                    primary="Knowledge Base Ready"
-                    secondary={systemStatus.knowledge_base_ready ? 'Yes' : 'No'}
-                  />
-                </ListItem>
-                <ListItem>
-                  <ListItemText
-                    primary="LLM Ready"
-                    secondary={systemStatus.llm_ready ? 'Yes' : 'No'}
-                  />
-                </ListItem>
-              </List>
+              <Typography variant="h6" gutterBottom sx={{ color: 'secondary.main' }}>System Status</Typography>
+              <Box sx={{ display: 'flex', gap: 4 }}>
+                 <Box><Typography variant="caption" color="text.secondary">STATUS</Typography><Typography variant="body1" sx={{ fontWeight: 'bold', color: 'success.main' }}>{systemStatus.status.toUpperCase()}</Typography></Box>
+                 <Box><Typography variant="caption" color="text.secondary">TOTAL CHUNKS</Typography><Typography variant="body1" sx={{ fontWeight: 'bold', color: 'text.primary' }}>{systemStatus.documents_count}</Typography></Box>
+              </Box>
             </CardContent>
           </Card>
         )}
 
-        {/* Upload Form */}
-        <Paper elevation={3} sx={{ p: 4 }}>
-          <Typography variant="h5" gutterBottom>
-            Upload Document
-          </Typography>
-          <Typography variant="body2" color="text.secondary" paragraph>
-            Upload a PDF document to add it to the knowledge base. The document will be processed,
-            chunked, and made available for semantic search.
-          </Typography>
-
-          <Divider sx={{ my: 3 }} />
-
-          {/* File Input */}
-          <Box sx={{ mb: 3 }}>
-            <input
-              id="file-input"
-              type="file"
-              accept=".pdf"
-              onChange={handleFileSelect}
-              style={{ display: 'none' }}
-            />
+        {/* Upload Card */}
+        <Paper sx={cardStyle}>
+          <Box sx={{ border: `2px dashed ${theme.palette.divider}`, borderRadius: '12px', p: 4, textAlign: 'center' }}>
+            <input id="file-input" type="file" accept=".pdf" onChange={handleFileSelect} style={{ display: 'none' }} />
             <label htmlFor="file-input">
-              <Button
-                variant="outlined"
-                component="span"
-                startIcon={<CloudUpload />}
-                size="large"
-                fullWidth
-              >
-                Select PDF File
-              </Button>
+              <Button variant="contained" component="span" startIcon={<CloudUpload />} size="large" sx={{ mb: 2, color: 'white' }}>Select PDF Document</Button>
             </label>
+            {selectedFile && <Typography sx={{ mt: 2, color: 'secondary.main' }}>Selected: {selectedFile.name}</Typography>}
           </Box>
 
-          {/* Selected File Display */}
-          {selectedFile && (
-            <Alert severity="info" sx={{ mb: 3 }}>
-              <strong>Selected:</strong> {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
-            </Alert>
-          )}
-
-          {/* Upload Button */}
-          <Button
-            variant="contained"
-            size="large"
-            fullWidth
-            disabled={!selectedFile || uploading}
-            onClick={handleUpload}
-            startIcon={uploading ? <CircularProgress size={20} /> : <CloudUpload />}
-          >
-            {uploading ? 'Uploading and Processing...' : 'Upload Document'}
+          <Button variant="contained" color="primary" fullWidth size="large" disabled={!selectedFile || uploading} onClick={handleUpload} sx={{ mt: 3, color: 'white' }}>
+            {uploading ? 'Processing AI Vectorization...' : 'Upload & Process'}
           </Button>
         </Paper>
 
-        {/* Error Display */}
-        {uploadError && (
-          <Alert severity="error" sx={{ mt: 3 }} onClose={() => setUploadError(null)}>
-            {uploadError}
-          </Alert>
-        )}
-
-        {/* Success Display */}
-        {uploadResult && (
-          <Alert
-            severity="success"
-            icon={<CheckCircle />}
-            sx={{ mt: 3 }}
-            onClose={() => setUploadResult(null)}
-          >
-            <Typography variant="subtitle2" gutterBottom>
-              <strong>{uploadResult.message}</strong>
-            </Typography>
-            <Typography variant="body2">
-              File: {uploadResult.filename}<br />
-              Chunks created: {uploadResult.chunks_created}
-            </Typography>
-          </Alert>
-        )}
-
-        {/* Instructions */}
-        <Card sx={{ mt: 3 }}>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              Instructions
-            </Typography>
-            <List>
-              <ListItem>
-                <ListItemText
-                  primary="1. Select a PDF File"
-                  secondary="Click 'Select PDF File' and choose a document from your computer"
-                />
-              </ListItem>
-              <ListItem>
-                <ListItemText
-                  primary="2. Verify File Selection"
-                  secondary="Check that the correct file is selected and size is under 10MB"
-                />
-              </ListItem>
-              <ListItem>
-                <ListItemText
-                  primary="3. Upload Document"
-                  secondary="Click 'Upload Document' to process and add to knowledge base"
-                />
-              </ListItem>
-              <ListItem>
-                <ListItemText
-                  primary="4. Wait for Processing"
-                  secondary="The system will extract text, create chunks, and generate embeddings"
-                />
-              </ListItem>
-            </List>
-          </CardContent>
-        </Card>
+        {uploadResult && uploadResult.message && <Alert severity="success" sx={{ mt: 3 }}>{uploadResult.message}</Alert>}
       </Box>
     </Container>
   );

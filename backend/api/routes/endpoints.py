@@ -41,7 +41,7 @@ async def submit_query(request: QueryRequest):
     This is the main endpoint for the Q&A functionality. It:
     1. Generates an answer using the Llama model
     2. Retrieves relevant passages from the knowledge base
-    3. Computes a confidence score
+    3. Computes a confidence score using 4-dimensional evaluation
     4. Returns answer, score, and citations
     """
     start_time = time.time()
@@ -73,9 +73,10 @@ async def submit_query(request: QueryRequest):
             
             response = QueryResponse(
                 question=request.question,
-                answer=answer + "\n\n⚠️ Note: This question may not be covered in the uploaded documents.",
+                answer=answer,  # CLEAN ANSWER - NO WARNINGS
                 confidence_score=0.0,
                 confidence_label="Low - Not in Ground Truth",
+                explanation="Question not found in Ground Truth documents. This appears to be a general knowledge question outside the scope of uploaded documents. Confidence scoring is not applicable.",
                 citations=[],
                 timestamp=datetime.now(),
                 processing_time_ms=round((time.time() - start_time) * 1000, 2)
@@ -85,13 +86,14 @@ async def submit_query(request: QueryRequest):
         
         # Step 2: Generate answer using Llama model *without* context (RAG disabled as requested)
         logger.info("Generating answer...")
-        # context = "\n\n".join([p["text"] for p in retrieved_passages]) # RAG CONTEXT REMOVED
-        answer = llama_service.generate_answer(request.question, context=None) # Always call with None
+        answer = llama_service.generate_answer(request.question, context=None)
         
-        # Step 3: Compute confidence score
-        logger.info("Computing confidence score...")
-        confidence_score, explanation, citations = scoring_service.compute_confidence_score(
-            answer, retrieved_passages
+        # Step 3: Compute confidence score using enhanced 4-dimensional evaluation
+        logger.info("Computing confidence score with 4-dimensional evaluation...")
+        confidence_score, explanation, citations, score_breakdown = scoring_service.compute_confidence_score(
+            answer=answer,
+            question=request.question,  # NOW INCLUDES QUESTION PARAMETER
+            retrieved_passages=retrieved_passages
         )
         
         # Determine confidence label
@@ -102,26 +104,25 @@ async def submit_query(request: QueryRequest):
         else:
             confidence_label = "Low"
         
-        # Add warning if confidence is low but question matches documents
-        if confidence_score < 0.4 and max_similarity > MIN_SIMILARITY_THRESHOLD:
-            answer += "\n\n⚠️ Note: Low confidence - AI answer may not fully align with source documents."
-        
         # Calculate processing time
         processing_time = (time.time() - start_time) * 1000  # Convert to ms
         
-        # Create response
+        # Create response with explanation and score breakdown
         response = QueryResponse(
             question=request.question,
             answer=answer,
             confidence_score=confidence_score,
             confidence_label=confidence_label,
+            explanation=explanation,  # Include detailed explanation
             citations=citations,
+            score_breakdown=score_breakdown,  # Include dimension breakdown
             timestamp=datetime.now(),
             processing_time_ms=round(processing_time, 2)
         )
         
         logger.info(f"Query processed successfully in {processing_time:.2f}ms")
         logger.info(f"Confidence: {confidence_score:.2f} ({confidence_label})")
+        logger.info(f"Explanation: {explanation[:100]}...")
         
         return response
         
