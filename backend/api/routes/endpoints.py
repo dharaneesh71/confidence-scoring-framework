@@ -1,5 +1,6 @@
 """
 API endpoint definitions
+Modified for Retrieval-Augmented Verification (Blind Generation + Evidence Grading)
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
@@ -29,101 +30,86 @@ chroma_service = ChromaService()
 llama_service = LlamaService()
 scoring_service = ScoringService()
 
-# Minimum similarity threshold to consider document relevant
+# Minimum similarity threshold (kept for logging, but we no longer exit early)
 MIN_SIMILARITY_THRESHOLD = 0.3
 
 
 @router.post("/query", response_model=QueryResponse)
 async def submit_query(request: QueryRequest):
     """
-    Submit a question and receive AI-generated answer with confidence score
+    Submit a question for 'Blind Generation' and 'Evidence-Based Verification'
     
-    This is the main endpoint for the Q&A functionality. It:
-    1. Generates an answer using the Llama model
-    2. Retrieves relevant passages from the knowledge base
-    3. Computes a confidence score using 4-dimensional evaluation
-    4. Returns answer, score, and citations
+    Process:
+    1. AI generates answer blindly (No context provided).
+    2. System retrieves relevant documents (Answer Key).
+    3. Scorer compares AI answer vs Documents.
     """
     start_time = time.time()
     
     try:
         logger.info(f"Received query: {request.question[:100]}...")
         
-        # Step 1: Retrieve relevant passages from knowledge base
-        logger.info("Searching knowledge base...")
+        # --- PHASE 1: GENERATION (Blind) ---
+        # Generate answer using Llama model *without* context.
+        # We explicitly pass context=None to force the AI to use its own training.
+        logger.info("Generating 'Blind' answer (No RAG context provided to LLM)...")
+        answer = llama_service.generate_answer(request.question, context=None)
+        
+        # --- PHASE 2: RETRIEVAL (For Verification Only) ---
+        # Retrieve relevant passages from knowledge base to serve as the "Answer Key"
+        logger.info("Retrieving ground truth documents for grading...")
         retrieved_passages = chroma_service.search(request.question, top_k=3)
         
+        # Handle case where no documents exist in DB
         if not retrieved_passages:
-            raise HTTPException(
-                status_code=404,
-                detail="No relevant information found in knowledge base. Please upload documents first."
-            )
-        
-        # Check if retrieved passages are actually relevant
-        max_similarity = max(p["similarity_score"] for p in retrieved_passages)
-        
-        logger.info(f"Top similarity score: {max_similarity:.2f}")
-        
-        # If no passage is sufficiently similar, the question is likely not in ground truth
-        if max_similarity < MIN_SIMILARITY_THRESHOLD:
-            logger.warning(f"Low similarity ({max_similarity:.2f}) - Question not in ground truth")
-            
-            # Generate answer anyway but mark as low confidence
-            answer = llama_service.generate_answer(request.question, context=None)
-            
-            response = QueryResponse(
+            logger.warning("No relevant information found in knowledge base for verification.")
+            # We return the AI's answer, but the score is forced to 0.0 because we can't verify it.
+            return QueryResponse(
                 question=request.question,
-                answer=answer,  # CLEAN ANSWER - NO WARNINGS
+                answer=answer,
                 confidence_score=0.0,
-                confidence_label="Low - Not in Ground Truth",
-                explanation="Question not found in Ground Truth documents. This appears to be a general knowledge question outside the scope of uploaded documents. Confidence scoring is not applicable.",
+                confidence_label="Unverified - No Data",
+                explanation="The AI generated an answer, but no documents were found in the database to verify it against.",
                 citations=[],
+                score_breakdown={"consistency": 0, "semantic": 0, "completeness": 0, "precision": 0},
                 timestamp=datetime.now(),
                 processing_time_ms=round((time.time() - start_time) * 1000, 2)
             )
-            
-            return response
         
-        # Step 2: Generate answer using Llama model *without* context (RAG disabled as requested)
-        logger.info("Generating answer...")
-        answer = llama_service.generate_answer(request.question, context=None)
-        
-        # Step 3: Compute confidence score using enhanced 4-dimensional evaluation
-        logger.info("Computing confidence score with 4-dimensional evaluation...")
+        # --- PHASE 3: SCORING (The Grading) ---
+        # Compute confidence score by comparing the Blind Answer vs Retrieved Passages
+        logger.info("Computing confidence score (Verification)...")
         confidence_score, explanation, citations, score_breakdown = scoring_service.compute_confidence_score(
             answer=answer,
-            question=request.question,  # NOW INCLUDES QUESTION PARAMETER
+            question=request.question,
             retrieved_passages=retrieved_passages
         )
         
         # Determine confidence label
         if confidence_score >= settings.HIGH_CONFIDENCE_THRESHOLD:
-            confidence_label = "High"
+            confidence_label = "High - Verified"
         elif confidence_score >= settings.MEDIUM_CONFIDENCE_THRESHOLD:
-            confidence_label = "Medium"
+            confidence_label = "Medium - Partially Verified"
         else:
-            confidence_label = "Low"
+            confidence_label = "Low - Unverified"
         
         # Calculate processing time
         processing_time = (time.time() - start_time) * 1000  # Convert to ms
         
-        # Create response with explanation and score breakdown
+        # Create response
         response = QueryResponse(
             question=request.question,
             answer=answer,
             confidence_score=confidence_score,
             confidence_label=confidence_label,
-            explanation=explanation,  # Include detailed explanation
+            explanation=explanation,
             citations=citations,
-            score_breakdown=score_breakdown,  # Include dimension breakdown
+            score_breakdown=score_breakdown,
             timestamp=datetime.now(),
             processing_time_ms=round(processing_time, 2)
         )
         
-        logger.info(f"Query processed successfully in {processing_time:.2f}ms")
-        logger.info(f"Confidence: {confidence_score:.2f} ({confidence_label})")
-        logger.info(f"Explanation: {explanation[:100]}...")
-        
+        logger.info(f"Query processed successfully. Score: {confidence_score:.2f}")
         return response
         
     except HTTPException:
@@ -143,12 +129,6 @@ async def upload_document(
 ):
     """
     Upload a PDF document to the knowledge base (Admin only)
-    
-    This endpoint:
-    1. Validates the uploaded file
-    2. Extracts text from the PDF
-    3. Chunks the text
-    4. Stores embeddings in ChromaDB
     """
     try:
         logger.info(f"Received file upload: {file.filename}")
@@ -160,8 +140,7 @@ async def upload_document(
                 detail="Only PDF files are supported"
             )
         
-        # Check file size
-        file_size_mb = 0
+        # Check file size (Read content to check size)
         try:
             content = await file.read()
             file_size_mb = len(content) / (1024 * 1024)
@@ -226,12 +205,6 @@ async def upload_document(
 async def get_status():
     """
     Get system status and health check
-    
-    Returns information about:
-    - Overall system status
-    - Knowledge base availability
-    - LLM availability
-    - Number of documents in knowledge base
     """
     try:
         kb_ready = chroma_service.is_ready()

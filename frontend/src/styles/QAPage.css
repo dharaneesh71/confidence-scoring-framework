@@ -1,6 +1,45 @@
-/* Placeholder for any future Q&A Page specific styles */
+/* QAPage.css */
+
 .qa-container {
     min-height: calc(100vh - 64px - 80px);
+}
+
+/* --- THE CONFID.AI TITLE EFFECT --- */
+/* This only affects elements explicitly employing this class */
+.glassy-text {
+  font-family: 'Roboto', 'Helvetica', 'Arial', sans-serif;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  
+  /* Make the font responsive but large */
+  font-size: 4rem !important; 
+  
+  /* 1. Metallic Gradient Fill (Restricted to text) */
+  background: linear-gradient(
+    180deg, 
+    #FFFFFF 20%, 
+    #d4f4f7 45%, 
+    #22d3ee 55%, 
+    #0891b2 90%
+  );
+  
+  /* Clips background to the letters only */
+  -webkit-background-clip: text;
+  background-clip: text;
+  
+  /* Transparent text to show gradient */
+  color: transparent;
+  
+  /* 2. Edge Highlight */
+  -webkit-text-stroke: 1px rgba(255, 255, 255, 0.4);
+  
+  /* 3. Neon Glow (Drop Shadow on Text Only) */
+  filter: drop-shadow(0 0 10px rgba(6, 182, 212, 0.6))
+          drop-shadow(0 0 20px rgba(6, 182, 212, 0.4));
+          
+  margin-bottom: 0.2em !important;
+  display: inline-block; /* Ensures filters apply tightly to text */
 }
 
 /* Animation for result paper appearance */
