@@ -2,30 +2,53 @@ import React, { useState } from 'react';
 import {
   Container, Paper, TextField, Button, Typography, Box,
   CircularProgress, Alert, Chip, Card, CardContent, LinearProgress,
-  useTheme, Divider, Tooltip
+  useTheme, Divider, Rating, Collapse
 } from '@mui/material';
 import { 
-  Send, Info, WarningAmber, CheckCircle, Public, 
-  FactCheck, Lightbulb, ChecklistRtl, Verified 
+  Send, Lightbulb, CheckCircle, Public, WarningAmber
 } from '@mui/icons-material';
-// Ensure this path matches your file structure
-import { submitQuery } from '../services/api'; 
+import { useAuth } from '../context/AuthContext'; // <--- NEW IMPORT
 import '../styles/QAPage.css';
 
 const QAPage = () => {
   const theme = useTheme();
+  const { user } = useAuth(); // <--- GET USER TOKEN
+  
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
+  // Feedback State
+  const [rating, setRating] = useState(0);
+  const [comment, setComment] = useState('');
+  const [feedbackSent, setFeedbackSent] = useState(false);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!question.trim()) { setError('Please enter a question'); return; }
-    setLoading(true); setError(null); setResult(null);
+    
+    setLoading(true); 
+    setError(null); 
+    setResult(null);
+    setFeedbackSent(false);
+    setRating(0);
+    setComment('');
+
     try {
-      const response = await submitQuery(question);
-      setResult(response);
+      // Direct fetch to include Authorization Header
+      const response = await fetch('http://localhost:8000/api/query', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}` // <--- SEND TOKEN
+        },
+        body: JSON.stringify({ question }),
+      });
+
+      if (!response.ok) throw new Error("Failed to get answer");
+      const data = await response.json();
+      setResult(data);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -33,29 +56,45 @@ const QAPage = () => {
     }
   };
 
-  const isGeneralKnowledge = (res) => {
-    if (!res) return false;
-    return res.confidence_score < 0.1;
+  const submitFeedback = async () => {
+    if (!result?.history_id) return;
+
+    try {
+      await fetch('http://localhost:8000/api/feedback', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({
+          history_id: result.history_id,
+          rating: rating,
+          comment: comment
+        }),
+      });
+      setFeedbackSent(true);
+    } catch (err) {
+      console.error("Feedback failed", err);
+    }
   };
 
-  // --- UPDATED THRESHOLD LOGIC (75%) ---
+  const isGeneralKnowledge = (res) => res && res.confidence_score < 0.1;
+
   const getConfidenceColor = (score) => {
-    if (score >= 0.75) return 'success'; // Green starts at 75%
+    if (score >= 0.75) return 'success';
     if (score >= 0.5) return 'warning';
     return 'error';
   };
   
   const getConfidenceLabel = (score) => {
-    if (score >= 0.75) return 'HIGH';    // High starts at 75%
+    if (score >= 0.75) return 'HIGH';
     if (score >= 0.5) return 'MEDIUM';
     return 'LOW';
   };
 
-  // Standard card style (Clean, no glass effect on surrounding area)
   const cardStyle = {
     p: 4, 
     borderRadius: '16px',
-    // Adaptive background for Light/Dark mode
     background: theme.palette.mode === 'dark' ? 'rgba(30, 41, 59, 0.8)' : '#ffffff',
     boxShadow: theme.palette.mode === 'dark' ? '0 8px 32px rgba(0,0,0,0.3)' : '0 8px 32px rgba(0,0,0,0.05)',
   };
@@ -64,7 +103,6 @@ const QAPage = () => {
     <Container maxWidth="lg" className="qa-container">
       <Box sx={{ my: 6, textAlign: 'center' }}>
         
-        {/* --- 1. SPECIAL TEXT EFFECT ONLY ON THE TITLE --- */}
         <Typography variant="h1" className="glassy-text" sx={{ mb: 1 }}>
           CONFID.AI
         </Typography>
@@ -73,7 +111,7 @@ const QAPage = () => {
           Multi-Dimensional Evidence-Based Evaluation
         </Typography>
 
-        {/* --- 2. INPUT SECTION (Clean Standard Style) --- */}
+        {/* INPUT SECTION */}
         <Paper elevation={3} sx={cardStyle}>
           <form onSubmit={handleSubmit}>
             <TextField
@@ -86,19 +124,7 @@ const QAPage = () => {
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               disabled={loading}
-              InputLabelProps={{
-                sx: { color: 'text.secondary', '&.Mui-focused': { color: 'secondary.main' } }
-              }}
-              sx={{ 
-                mb: 3,
-                '& .MuiOutlinedInput-root': {
-                    backgroundColor: theme.palette.mode === 'dark' ? 'rgba(0,0,0,0.2)' : '#f8f9fa',
-                    '&:hover fieldset': { borderColor: 'secondary.main' },
-                    '&.Mui-focused fieldset': { 
-                        borderColor: 'secondary.main', 
-                    },
-                },
-              }}
+              sx={{ mb: 3 }}
             />
             <Button
               type="submit"
@@ -115,53 +141,32 @@ const QAPage = () => {
           </form>
         </Paper>
 
-        {/* ERROR DISPLAY */}
-        {error && (
-          <Alert severity="error" sx={{ mt: 2, borderRadius: '12px' }}>
-            {error}
-          </Alert>
-        )}
+        {error && <Alert severity="error" sx={{ mt: 2, borderRadius: '12px' }}>{error}</Alert>}
 
-        {/* --- 3. RESULTS SECTION (Clean Standard Style) --- */}
+        {/* RESULTS SECTION */}
         {result && !loading && (
           <Paper className="result-paper-fade" sx={{ ...cardStyle, mt: 4, textAlign: 'left' }}>
-             
+              
              {/* ANSWER TEXT */}
              <Box sx={{ mb: 3 }}>
                <Typography variant="h6" color="secondary" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                 <Lightbulb fontSize="small" />
-                 Answer:
+                 <Lightbulb fontSize="small" /> Answer:
                </Typography>
-               <Typography paragraph sx={{ 
-                 lineHeight: 1.8, 
-                 color: 'text.primary',
-                 fontSize: '1.05rem',
-                 pl: 1
-               }}>
+               <Typography paragraph sx={{ lineHeight: 1.8, fontSize: '1.05rem', pl: 1 }}>
                   {result.answer}
                </Typography>
              </Box>
 
              <Divider sx={{ my: 3 }} />
              
-             {/* STATUS BLOCK */}
-             <Box sx={{ 
-                 my: 3, 
-                 p: 3, 
-                 border: `1px solid ${theme.palette.divider}`, 
-                 borderRadius: '16px',
-                 bgcolor: theme.palette.mode === 'dark' ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.02)'
-             }}>
+             {/* CONFIDENCE BLOCK */}
+             <Box sx={{ my: 3, p: 3, border: `1px solid ${theme.palette.divider}`, borderRadius: '16px', bgcolor: theme.palette.mode === 'dark' ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.02)' }}>
                 {isGeneralKnowledge(result) ? (
                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                        <Public sx={{ fontSize: 36, color: 'info.main' }} />
                        <Box>
-                           <Typography variant="h6" sx={{ fontWeight: 'bold', color: 'info.main' }}>
-                               General Knowledge Response
-                           </Typography>
-                           <Typography variant="body2" color="text.secondary">
-                               Answer not found in Ground Truth documents.
-                           </Typography>
+                           <Typography variant="h6" sx={{ fontWeight: 'bold', color: 'info.main' }}>General Knowledge Response</Typography>
+                           <Typography variant="body2" color="text.secondary">Answer not found in Ground Truth documents.</Typography>
                        </Box>
                    </Box>
                 ) : (
@@ -169,50 +174,14 @@ const QAPage = () => {
                       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                               <CheckCircle fontSize="medium" color="success" />
-                              <Typography variant="h6" sx={{ fontWeight: 'bold', color: 'text.primary' }}>
-                                  Verified from Documents
-                              </Typography>
+                              <Typography variant="h6" sx={{ fontWeight: 'bold' }}>Verified from Documents</Typography>
                           </Box>
-                          <Chip 
-                              label={`${getConfidenceLabel(result.confidence_score)} CONFIDENCE`} 
-                              color={getConfidenceColor(result.confidence_score)} 
-                              sx={{ fontWeight: 'bold' }}
-                          />
+                          <Chip label={`${getConfidenceLabel(result.confidence_score)} CONFIDENCE`} color={getConfidenceColor(result.confidence_score)} sx={{ fontWeight: 'bold' }} />
                       </Box>
-
-                      <Box sx={{ mb: 2 }}>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                          <Typography variant="body2" color="text.secondary">Confidence Score</Typography>
-                          <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
-                            {(result.confidence_score * 100).toFixed(0)}%
-                          </Typography>
-                        </Box>
-                        {/* Progress bar reflects the new color logic */}
-                        <LinearProgress 
-                            variant="determinate" 
-                            value={result.confidence_score * 100} 
-                            color={getConfidenceColor(result.confidence_score)} 
-                            sx={{ height: 10, borderRadius: 5 }} 
-                        />
-                      </Box>
-
+                      <LinearProgress variant="determinate" value={result.confidence_score * 100} color={getConfidenceColor(result.confidence_score)} sx={{ height: 10, borderRadius: 5, mb: 2 }} />
                       {result.explanation && (
-                        <Box sx={{ mt: 2, p: 2, bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)', borderRadius: '8px' }}>
-                          <Typography variant="body2" color="text.secondary">
-                            <strong>Evaluation Details:</strong> {result.explanation}
-                          </Typography>
-                        </Box>
-                      )}
-
-                      {/* Score Breakdown Grid */}
-                      {result.score_breakdown && (
-                        <Box sx={{ mt: 3, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 2 }}>
-                            {Object.entries(result.score_breakdown).map(([key, score]) => (
-                                <Box key={key} sx={{ textAlign: 'center', p: 2, borderRadius: '12px', bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.03)' : 'white', border: `1px solid ${theme.palette.divider}` }}>
-                                    <Typography variant="caption" sx={{ color: 'text.secondary', textTransform: 'capitalize' }}>{key}</Typography>
-                                    <Typography variant="h6" sx={{ fontWeight: 'bold' }}>{(score * 100).toFixed(0)}%</Typography>
-                                </Box>
-                            ))}
+                        <Box sx={{ p: 2, bgcolor: theme.palette.action.hover, borderRadius: '8px' }}>
+                          <Typography variant="body2" color="text.secondary"><strong>Evaluation Details:</strong> {result.explanation}</Typography>
                         </Box>
                       )}
                    </>
@@ -233,6 +202,43 @@ const QAPage = () => {
                     ))}
                  </Box>
              )}
+
+             <Divider sx={{ my: 4 }} />
+
+             {/* NEW: FEEDBACK SECTION */}
+             <Box sx={{ textAlign: 'center' }}>
+               {!feedbackSent ? (
+                 <>
+                   <Typography component="legend" sx={{ mb: 1 }}>Rate this answer</Typography>
+                   <Rating
+                     value={rating}
+                     size="large"
+                     onChange={(event, newValue) => setRating(newValue)}
+                   />
+                   
+                   <Collapse in={rating > 0 && rating < 5}>
+                     <TextField
+                       fullWidth
+                       multiline
+                       rows={2}
+                       placeholder="What was missing? (Optional)"
+                       value={comment}
+                       onChange={(e) => setComment(e.target.value)}
+                       sx={{ mt: 2 }}
+                     />
+                   </Collapse>
+
+                   {rating > 0 && (
+                     <Button onClick={submitFeedback} variant="outlined" sx={{ mt: 2 }}>
+                       Submit Feedback
+                     </Button>
+                   )}
+                 </>
+               ) : (
+                 <Alert severity="success" sx={{ justifyContent: 'center' }}>Thanks for your feedback!</Alert>
+               )}
+             </Box>
+
           </Paper>
         )}
       </Box>

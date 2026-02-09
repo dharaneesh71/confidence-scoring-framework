@@ -1,53 +1,111 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  Container, Paper, TextField, Button, Typography, Box,
-  Alert, Card, CardContent, List, ListItem, ListItemText, Chip, useTheme
+  Container, Paper, Button, Typography, Box,
+  Alert, Card, CardContent, useTheme, LinearProgress,
+  Grid, Table, TableBody, TableCell, TableContainer, 
+  TableHead, TableRow, IconButton, Chip
 } from '@mui/material';
-import { CloudUpload, Login } from '@mui/icons-material';
-import { uploadDocument, getStatus } from '../services/api';
+import { CloudUpload, Delete, Assessment, Description } from '@mui/icons-material';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { useAuth } from '../context/AuthContext';
 import '../styles/AdminPage.css';
 
 const AdminPage = () => {
   const theme = useTheme();
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [loginError, setLoginError] = useState('');
+  const { user } = useAuth();
+  
+  // State
+  const [stats, setStats] = useState(null);
+  const [documents, setDocuments] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState({}); 
-  const [uploadError, setUploadError] = useState(null);
-  const [systemStatus, setSystemStatus] = useState({}); 
+  const [message, setMessage] = useState('');
 
-  const handleLogin = (e) => {
-    e.preventDefault();
-    if (username === 'admin' && password === 'admin123') {
-      setIsLoggedIn(true); setLoginError(''); loadSystemStatus();
-    } else { setLoginError('Invalid username or password'); }
+  // Initial Load
+  useEffect(() => {
+    if (user) {
+      fetchAnalytics();
+      fetchDocuments();
+    }
+  }, [user]);
+
+  // --- API CALLS ---
+
+  const fetchAnalytics = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/admin/analytics', {
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      });
+      const data = await res.json();
+      setStats(data);
+    } catch (err) { console.error("Error fetching analytics:", err); }
   };
 
-  const loadSystemStatus = async () => {
-    try { const status = await getStatus(); setSystemStatus(status); } 
-    catch (err) { console.error(err); }
-  };
-
-  const handleFileSelect = (e) => {
-    const file = e.target.files[0];
-    if (file) { setSelectedFile(file); setUploadError(null); setUploadResult(null); }
+  const fetchDocuments = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/admin/documents', {
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      });
+      const data = await res.json();
+      setDocuments(data);
+    } catch (err) { console.error("Error fetching documents:", err); }
   };
 
   const handleUpload = async () => {
     if (!selectedFile) return;
-    setUploading(true); setUploadError(null); setUploadResult(null);
+    setUploading(true);
+    setMessage('');
+    
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+
     try {
-      const result = await uploadDocument(selectedFile, username, password);
-      setUploadResult(result); setSelectedFile(null); document.getElementById('file-input').value = ''; loadSystemStatus();
-    } catch (err) { setUploadError(err.message); } finally { setUploading(false); }
+      const res = await fetch('http://localhost:8000/api/upload', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${user.token}` },
+        body: formData,
+      });
+      
+      const data = await res.json();
+      
+      if (res.ok) {
+        setMessage(`✅ Success: ${data.message}`);
+        setSelectedFile(null);
+        // Reset file input
+        const fileInput = document.getElementById('file-input');
+        if(fileInput) fileInput.value = '';
+        
+        fetchDocuments(); // Refresh list
+        fetchAnalytics(); // Refresh stats (if doc count changed)
+      } else {
+        setMessage(`❌ Error: ${data.detail}`);
+      }
+    } catch (err) { 
+        setMessage('❌ Upload failed: Server error'); 
+    } finally { 
+        setUploading(false); 
+    }
   };
 
-  // Dynamic Card Style
+  const handleDelete = async (id, filename) => {
+    if (!window.confirm(`Are you sure you want to delete "${filename}"? This will remove all knowledge associated with this file.`)) return;
+    try {
+      const res = await fetch(`http://localhost:8000/api/admin/documents/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      });
+      
+      if (res.ok) {
+          fetchDocuments(); // Refresh list
+      } else {
+          alert("Failed to delete document");
+      }
+    } catch (err) { console.error(err); }
+  };
+
+  // --- STYLES ---
   const cardStyle = {
-    p: 4,
+    p: 3,
     borderRadius: '20px',
     border: `1px solid ${theme.palette.divider}`,
     background: theme.palette.mode === 'dark' ? 'rgba(15, 23, 42, 0.8)' : 'rgba(255, 255, 255, 0.95)',
@@ -55,126 +113,136 @@ const AdminPage = () => {
     boxShadow: theme.palette.mode === 'light' ? '0 4px 20px rgba(0,0,0,0.1)' : undefined
   };
 
-  // Common Input Style for Glow Effect
-  const glowInputStyle = {
-    mb: 3,
-    '& .MuiOutlinedInput-root': {
-      backgroundColor: 'rgba(0,0,0,0.2)', // Slight dark tint inside
-      transition: 'all 0.3s ease-in-out',
-      // HOVER STATE (The "Light Up" Effect)
-      '&:hover fieldset': {
-        borderColor: 'secondary.main',
-        boxShadow: '0 0 15px rgba(77, 208, 225, 0.6)', // Glow on hover
-      },
-      // FOCUS STATE (Stronger Glow)
-      '&.Mui-focused fieldset': {
-        borderColor: 'secondary.main',
-        boxShadow: '0 0 25px rgba(77, 208, 225, 0.8)', // Intense glow on focus
-      },
-    },
-    // Label Styling
-    '& .MuiInputLabel-root': {
-      color: 'text.secondary',
-      '&.Mui-focused': { color: 'secondary.main' }
-    }
-  };
-
-  // LOGIN SCREEN
-  if (!isLoggedIn) {
-    return (
-      <Container maxWidth="xs">
-        <Box sx={{ my: 5, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <Paper elevation={12} sx={cardStyle}>
-            <Box sx={{ textAlign: 'center', mb: 3 }}>
-              <Login sx={{ fontSize: 50, color: 'secondary.main', mb: 1 }} />
-              <Typography variant="h5" sx={{ fontWeight: 700, color: 'text.primary' }}>
-                Admin Portal
-              </Typography>
-            </Box>
-
-            <form onSubmit={handleLogin}>
-              <TextField
-                fullWidth
-                label="Username"
-                variant="outlined"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                sx={glowInputStyle} // Applying the glow style here
-              />
-              <TextField
-                fullWidth
-                type="password"
-                label="Password"
-                variant="outlined"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                sx={glowInputStyle} // Applying the glow style here
-              />
-              {loginError && <Alert severity="error" sx={{ mb: 2 }}>{loginError}</Alert>}
-              <Button 
-                type="submit" 
-                variant="contained" 
-                color="secondary" 
-                fullWidth 
-                size="large" 
-                sx={{ 
-                  fontWeight: 'bold', 
-                  color: 'white',
-                  boxShadow: '0 0 10px rgba(77, 208, 225, 0.4)', // Subtle glow for button too
-                  '&:hover': { boxShadow: '0 0 20px rgba(77, 208, 225, 0.7)' } 
-                }}
-              >
-                Sign In
-              </Button>
-            </form>
-            <Alert severity="info" sx={{ mt: 3, py: 0, bgcolor: 'rgba(77, 208, 225, 0.1)', color: 'text.primary' }}>
-              <small>User: admin | Pass: admin123</small>
-            </Alert>
-          </Paper>
-        </Box>
-      </Container>
-    );
-  }
-
-  // MAIN ADMIN SCREEN
   return (
-    <Container maxWidth="lg">
-      <Box sx={{ my: 4 }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
-          <Typography variant="h4" sx={{ fontWeight: 800, color: 'text.primary' }}>Knowledge Base</Typography>
-          <Button variant="outlined" color="secondary" onClick={() => setIsLoggedIn(false)}>Logout</Button>
-        </Box>
-
-        {/* Status Card */}
-        {systemStatus && systemStatus.status && (
-          <Card sx={{ ...cardStyle, mb: 4, borderLeft: `4px solid ${theme.palette.secondary.main}`, p: 0 }}>
+    <Container maxWidth="lg" sx={{ my: 4 }}>
+      <Typography variant="h4" fontWeight={800} gutterBottom sx={{ mb: 4 }}>
+        Admin Dashboard
+      </Typography>
+      
+      {/* 1. ANALYTICS SECTION */}
+      <Grid container spacing={3} sx={{ mb: 4 }}>
+        {/* Rating Chart */}
+        <Grid item xs={12} md={8}>
+          <Paper sx={{ ...cardStyle, height: 320 }}>
+             <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+               <Assessment color="primary"/> User Feedback Ratings
+             </Typography>
+             {stats ? (
+               <ResponsiveContainer width="100%" height="85%">
+                 <BarChart data={stats.distribution}>
+                   <XAxis dataKey="name" stroke={theme.palette.text.secondary} />
+                   <YAxis stroke={theme.palette.text.secondary} />
+                   <Tooltip 
+                        contentStyle={{ 
+                            backgroundColor: theme.palette.background.paper,
+                            borderRadius: '8px',
+                            border: `1px solid ${theme.palette.divider}`
+                        }} 
+                        cursor={{fill: 'transparent'}} 
+                   />
+                   <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                     {stats.distribution.map((entry, index) => (
+                       <Cell key={`cell-${index}`} fill={index > 2 ? theme.palette.success.main : theme.palette.warning.main} />
+                     ))}
+                   </Bar>
+                 </BarChart>
+               </ResponsiveContainer>
+             ) : <Typography>Loading stats...</Typography>}
+          </Paper>
+        </Grid>
+        
+        {/* Summary Card */}
+        <Grid item xs={12} md={4}>
+          <Card sx={{ ...cardStyle, height: 320, display: 'flex', flexDirection: 'column', justifyContent: 'center', textAlign: 'center' }}>
             <CardContent>
-              <Typography variant="h6" gutterBottom sx={{ color: 'secondary.main' }}>System Status</Typography>
-              <Box sx={{ display: 'flex', gap: 4 }}>
-                 <Box><Typography variant="caption" color="text.secondary">STATUS</Typography><Typography variant="body1" sx={{ fontWeight: 'bold', color: 'success.main' }}>{systemStatus.status.toUpperCase()}</Typography></Box>
-                 <Box><Typography variant="caption" color="text.secondary">TOTAL CHUNKS</Typography><Typography variant="body1" sx={{ fontWeight: 'bold', color: 'text.primary' }}>{systemStatus.documents_count}</Typography></Box>
-              </Box>
+              <Typography color="text.secondary" gutterBottom>AVERAGE RATING</Typography>
+              <Typography variant="h1" fontWeight="bold" color="primary">
+                {stats?.average_rating || 0}
+              </Typography>
+              <Typography variant="h5" color="text.secondary" sx={{ opacity: 0.7 }}>/ 5.0</Typography>
+              <Chip 
+                label={`${stats?.total_feedback || 0} Total Reviews`} 
+                sx={{ mt: 3, fontWeight: 'bold' }} 
+                color="primary" 
+                variant="outlined" 
+              />
             </CardContent>
           </Card>
-        )}
+        </Grid>
+      </Grid>
 
-        {/* Upload Card */}
-        <Paper sx={cardStyle}>
-          <Box sx={{ border: `2px dashed ${theme.palette.divider}`, borderRadius: '12px', p: 4, textAlign: 'center' }}>
-            <input id="file-input" type="file" accept=".pdf" onChange={handleFileSelect} style={{ display: 'none' }} />
-            <label htmlFor="file-input">
-              <Button variant="contained" component="span" startIcon={<CloudUpload />} size="large" sx={{ mb: 2, color: 'white' }}>Select PDF Document</Button>
-            </label>
-            {selectedFile && <Typography sx={{ mt: 2, color: 'secondary.main' }}>Selected: {selectedFile.name}</Typography>}
-          </Box>
+      {/* 2. DOCUMENT MANAGEMENT SECTION */}
+      <Paper sx={{ ...cardStyle, mb: 4 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+          <Typography variant="h6" fontWeight="bold" sx={{ display: 'flex', alignItems: 'center' }}>
+            <Description sx={{ mr: 1 }} />
+            Knowledge Base Documents
+          </Typography>
+        </Box>
 
-          <Button variant="contained" color="primary" fullWidth size="large" disabled={!selectedFile || uploading} onClick={handleUpload} sx={{ mt: 3, color: 'white' }}>
-            {uploading ? 'Processing AI Vectorization...' : 'Upload & Process'}
+        {/* Upload Area */}
+        <Box sx={{ 
+            display: 'flex', gap: 2, mb: 4, alignItems: 'center', 
+            bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)', 
+            p: 3, borderRadius: '16px', border: `1px dashed ${theme.palette.divider}`
+        }}>
+          <Button variant="contained" component="label" startIcon={<CloudUpload />} size="medium">
+            Choose PDF
+            <input id="file-input" type="file" hidden accept=".pdf" onChange={(e) => setSelectedFile(e.target.files[0])} />
           </Button>
-        </Paper>
+          <Typography sx={{ flexGrow: 1, color: 'text.secondary' }}>
+            {selectedFile ? selectedFile.name : "No file selected"}
+          </Typography>
+          <Button 
+            variant="contained" 
+            color="success" 
+            onClick={handleUpload} 
+            disabled={!selectedFile || uploading}
+          >
+            {uploading ? 'Uploading...' : 'Upload'}
+          </Button>
+        </Box>
+        
+        {message && <Alert severity={message.includes('Success') ? 'success' : 'error'} sx={{ mb: 3 }}>{message}</Alert>}
 
-        {uploadResult && uploadResult.message && <Alert severity="success" sx={{ mt: 3 }}>{uploadResult.message}</Alert>}
-      </Box>
+        {/* Document List Table */}
+        <TableContainer>
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableCell>Filename</TableCell>
+                <TableCell align="center">Chunks</TableCell>
+                <TableCell align="center">Upload Date</TableCell>
+                <TableCell align="right">Actions</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {documents.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} align="center" sx={{ py: 3, color: 'text.secondary' }}>
+                    No documents found in the Knowledge Base.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                documents.map((doc) => (
+                  <TableRow key={doc.id} hover>
+                    <TableCell sx={{ fontWeight: 'bold' }}>{doc.filename}</TableCell>
+                    <TableCell align="center">
+                        <Chip label={doc.chunk_count} size="small" />
+                    </TableCell>
+                    <TableCell align="center">{new Date(doc.upload_date).toLocaleDateString()}</TableCell>
+                    <TableCell align="right">
+                      <IconButton color="error" onClick={() => handleDelete(doc.id, doc.filename)} size="small">
+                        <Delete />
+                      </IconButton>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Paper>
     </Container>
   );
 };
