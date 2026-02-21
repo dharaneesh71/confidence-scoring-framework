@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 import {
   AppBar, Toolbar, Typography, Button, Box,
-  CssBaseline, ThemeProvider, createTheme, IconButton, Drawer, List, ListItem, ListItemText, Divider
+  CssBaseline, ThemeProvider, createTheme, IconButton, Drawer, List, ListItem, ListItemText, Divider, ListItemButton
 } from '@mui/material';
 import { 
   QuestionAnswer, AdminPanelSettings, Brightness4, Brightness7, 
@@ -16,7 +16,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import './App.css';
 
 // --- SIDEBAR COMPONENT ---
-const Sidebar = ({ open, onClose }) => {
+const Sidebar = ({ open, onClose, onSelectHistory }) => {
   const [history, setHistory] = useState([]);
   const { user } = useAuth();
 
@@ -43,12 +43,15 @@ const Sidebar = ({ open, onClose }) => {
             <Typography variant="body2" sx={{ p: 2, color: 'gray' }}>No history yet.</Typography>
           ) : (
             history.map((chat) => (
-              <ListItem button key={chat.id}>
-                <ListItemText 
-                  primary={chat.question} 
-                  secondary={new Date(chat.timestamp).toLocaleDateString()} 
-                  primaryTypographyProps={{ noWrap: true }}
-                />
+              <ListItem disablePadding key={chat.id}>
+                {/* MODIFIED: Now clicking an item triggers the onSelectHistory function */}
+                <ListItemButton onClick={() => onSelectHistory(chat.id)}>
+                  <ListItemText 
+                    primary={chat.question} 
+                    secondary={new Date(chat.timestamp).toLocaleDateString()} 
+                    primaryTypographyProps={{ noWrap: true }}
+                  />
+                </ListItemButton>
               </ListItem>
             ))
           )}
@@ -70,6 +73,10 @@ const PrivateRoute = ({ children, adminOnly = false }) => {
 function AppContent() {
   const [mode, setMode] = useState('dark');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  
+  // NEW: State to track which history item the user clicked in the sidebar
+  const [selectedHistoryId, setSelectedHistoryId] = useState(null);
+  
   const { user, logout } = useAuth();
   const location = useLocation();
 
@@ -81,15 +88,19 @@ function AppContent() {
     },
   }), [mode]);
 
-  // Hide Navbar on Login Page
   const isLoginPage = location.pathname === '/login';
+
+  // NEW: Function to handle when a user clicks a history item
+  const handleHistorySelect = (id) => {
+    setSelectedHistoryId(id);
+    setSidebarOpen(false); // Close the sidebar after selection
+  };
 
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <div className={`App ${mode === 'dark' ? 'theme-dark' : 'theme-light'}`}>
         
-        {/* Navbar */}
         {!isLoginPage && (
           <AppBar position="static" color="transparent" elevation={0} sx={{ backdropFilter: 'blur(10px)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
             <Toolbar>
@@ -109,7 +120,7 @@ function AppContent() {
 
               {user ? (
                 <>
-                  <Button component={Link} to="/" startIcon={<QuestionAnswer />} color="inherit">Q&A</Button>
+                  <Button component={Link} to="/" startIcon={<QuestionAnswer />} color="inherit" onClick={() => setSelectedHistoryId(null)}>Q&A</Button>
                   {user.role === 'admin' && (
                     <Button component={Link} to="/admin" startIcon={<AdminPanelSettings />} color="inherit">Admin</Button>
                   )}
@@ -122,16 +133,16 @@ function AppContent() {
           </AppBar>
         )}
 
-        {/* Sidebar for History */}
-        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+        {/* Sidebar now passes the selection back up */}
+        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} onSelectHistory={handleHistorySelect} />
 
-        {/* Routes */}
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           
           <Route path="/" element={
             <PrivateRoute>
-              <QAPage />
+              {/* Pass the selected ID down to the QAPage so it knows what to load */}
+              <QAPage selectedHistoryId={selectedHistoryId} clearSelection={() => setSelectedHistoryId(null)} />
             </PrivateRoute>
           } />
           

@@ -1,28 +1,70 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Container, Paper, TextField, Button, Typography, Box,
   CircularProgress, Alert, Chip, Card, CardContent, LinearProgress,
   useTheme, Divider, Rating, Collapse
 } from '@mui/material';
 import { 
-  Send, Lightbulb, CheckCircle, Public, WarningAmber
+  Send, Lightbulb, CheckCircle, Public, ArrowBack
 } from '@mui/icons-material';
-import { useAuth } from '../context/AuthContext'; // <--- NEW IMPORT
+import { useAuth } from '../context/AuthContext';
 import '../styles/QAPage.css';
 
-const QAPage = () => {
+const isGeneralKnowledge = (res) => res && res.confidence_score <= 0.05;
+const QAPage = ({ selectedHistoryId, clearSelection }) => {
   const theme = useTheme();
-  const { user } = useAuth(); // <--- GET USER TOKEN
+  const { user } = useAuth();
   
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [isHistoryView, setIsHistoryView] = useState(false);
 
   // Feedback State
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState('');
   const [feedbackSent, setFeedbackSent] = useState(false);
+
+  // NEW: Watch for clicks from the Hamburger menu
+  useEffect(() => {
+    if (selectedHistoryId) {
+      loadHistoryItem(selectedHistoryId);
+    } else {
+      handleStartNew();
+    }
+  }, [selectedHistoryId]);
+
+  const loadHistoryItem = async (historyId) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`http://localhost:8000/api/history/${historyId}`, {
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      });
+      if (!response.ok) throw new Error("History item not found");
+      const data = await response.json();
+      
+      setResult(data);
+      setQuestion(data.question || '');
+      setIsHistoryView(true);
+    } catch (err) {
+      setError("Could not retrieve history details.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStartNew = () => {
+    setIsHistoryView(false);
+    setResult(null);
+    setQuestion('');
+    setRating(0);
+    setComment('');
+    setFeedbackSent(false);
+    setError(null);
+    if(clearSelection) clearSelection();
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -36,12 +78,11 @@ const QAPage = () => {
     setComment('');
 
     try {
-      // Direct fetch to include Authorization Header
       const response = await fetch('http://localhost:8000/api/query', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.token}` // <--- SEND TOKEN
+          'Authorization': `Bearer ${user.token}`
         },
         body: JSON.stringify({ question }),
       });
@@ -111,55 +152,74 @@ const QAPage = () => {
           Multi-Dimensional Evidence-Based Evaluation
         </Typography>
 
-        {/* INPUT SECTION */}
-        <Paper elevation={3} sx={cardStyle}>
-          <form onSubmit={handleSubmit}>
-            <TextField
-              fullWidth
-              multiline
-              rows={3}
-              variant="outlined"
-              label="Ask the AI..."
-              placeholder="e.g., What are the properties of a square?"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              disabled={loading}
-              sx={{ mb: 3 }}
-            />
-            <Button
-              type="submit"
-              variant="contained"
-              color="secondary"
-              size="large"
-              fullWidth
-              disabled={loading || !question.trim()}
-              startIcon={loading ? <CircularProgress size={20} color="inherit" /> : <Send />}
-              sx={{ py: 1.5, fontSize: '1.1rem', fontWeight: 'bold', color: 'white' }}
+        {/* If viewing history, show a button to go back to Ask Mode */}
+        {isHistoryView && (
+            <Button 
+                variant="outlined" 
+                startIcon={<ArrowBack />} 
+                onClick={handleStartNew}
+                sx={{ mb: 4 }}
             >
-              {loading ? 'Analyzing...' : 'Submit Question'}
+                ASK NEW QUESTION
             </Button>
-          </form>
-        </Paper>
+        )}
+
+        {/* INPUT SECTION - Hides when viewing history */}
+        {!isHistoryView && (
+          <Paper elevation={3} sx={cardStyle}>
+            <form onSubmit={handleSubmit}>
+              <TextField
+                fullWidth
+                multiline
+                rows={3}
+                variant="outlined"
+                label="Ask the AI..."
+                placeholder="e.g., What are the properties of a square?"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                disabled={loading}
+                sx={{ mb: 3 }}
+              />
+              <Button
+                type="submit"
+                variant="contained"
+                color="secondary"
+                size="large"
+                fullWidth
+                disabled={loading || !question.trim()}
+                startIcon={loading ? <CircularProgress size={20} color="inherit" /> : <Send />}
+                sx={{ py: 1.5, fontSize: '1.1rem', fontWeight: 'bold', color: 'white' }}
+              >
+                {loading ? 'Analyzing...' : 'Submit Question'}
+              </Button>
+            </form>
+          </Paper>
+        )}
 
         {error && <Alert severity="error" sx={{ mt: 2, borderRadius: '12px' }}>{error}</Alert>}
 
         {/* RESULTS SECTION */}
         {result && !loading && (
           <Paper className="result-paper-fade" sx={{ ...cardStyle, mt: 4, textAlign: 'left' }}>
-              
-             {/* ANSWER TEXT */}
+             
+             {/* Show the historical question if in history mode */}
+             {isHistoryView && (
+                <Typography variant="h5" sx={{ mb: 4, fontWeight: 'bold', color: 'primary.main', borderBottom: `1px solid ${theme.palette.divider}`, pb: 2 }}>
+                  Historical Query: "{question}"
+                </Typography>
+             )}
+
              <Box sx={{ mb: 3 }}>
                <Typography variant="h6" color="secondary" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                  <Lightbulb fontSize="small" /> Answer:
                </Typography>
-               <Typography paragraph sx={{ lineHeight: 1.8, fontSize: '1.05rem', pl: 1 }}>
+               <Typography paragraph sx={{ lineHeight: 1.8, fontSize: '1.05rem', pl: 1, whiteSpace: 'pre-wrap' }}>
                   {result.answer}
                </Typography>
              </Box>
 
              <Divider sx={{ my: 3 }} />
              
-             {/* CONFIDENCE BLOCK */}
              <Box sx={{ my: 3, p: 3, border: `1px solid ${theme.palette.divider}`, borderRadius: '16px', bgcolor: theme.palette.mode === 'dark' ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.02)' }}>
                 {isGeneralKnowledge(result) ? (
                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -189,7 +249,7 @@ const QAPage = () => {
              </Box>
              
              {/* CITATIONS */}
-             {!isGeneralKnowledge(result) && result.citations && (
+             {!isGeneralKnowledge(result) && result.citations && result.citations.length > 0 && (
                  <Box sx={{ mt: 3 }}>
                     <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 'bold', color: 'text.secondary' }}>SOURCE REFERENCES</Typography>
                     {result.citations.map((cit, idx) => (
@@ -205,39 +265,41 @@ const QAPage = () => {
 
              <Divider sx={{ my: 4 }} />
 
-             {/* NEW: FEEDBACK SECTION */}
-             <Box sx={{ textAlign: 'center' }}>
-               {!feedbackSent ? (
-                 <>
-                   <Typography component="legend" sx={{ mb: 1 }}>Rate this answer</Typography>
-                   <Rating
-                     value={rating}
-                     size="large"
-                     onChange={(event, newValue) => setRating(newValue)}
-                   />
-                   
-                   <Collapse in={rating > 0 && rating < 5}>
-                     <TextField
-                       fullWidth
-                       multiline
-                       rows={2}
-                       placeholder="What was missing? (Optional)"
-                       value={comment}
-                       onChange={(e) => setComment(e.target.value)}
-                       sx={{ mt: 2 }}
+             {/* FEEDBACK SECTION (Hides when viewing history) */}
+             {!isHistoryView && (
+               <Box sx={{ textAlign: 'center' }}>
+                 {!feedbackSent ? (
+                   <>
+                     <Typography component="legend" sx={{ mb: 1 }}>Rate this answer</Typography>
+                     <Rating
+                       value={rating}
+                       size="large"
+                       onChange={(event, newValue) => setRating(newValue)}
                      />
-                   </Collapse>
+                     
+                     <Collapse in={rating > 0 && rating < 5}>
+                       <TextField
+                         fullWidth
+                         multiline
+                         rows={2}
+                         placeholder="What was missing? (Optional)"
+                         value={comment}
+                         onChange={(e) => setComment(e.target.value)}
+                         sx={{ mt: 2 }}
+                       />
+                     </Collapse>
 
-                   {rating > 0 && (
-                     <Button onClick={submitFeedback} variant="outlined" sx={{ mt: 2 }}>
-                       Submit Feedback
-                     </Button>
-                   )}
-                 </>
-               ) : (
-                 <Alert severity="success" sx={{ justifyContent: 'center' }}>Thanks for your feedback!</Alert>
-               )}
-             </Box>
+                     {rating > 0 && (
+                       <Button onClick={submitFeedback} variant="outlined" sx={{ mt: 2 }}>
+                         Submit Feedback
+                       </Button>
+                     )}
+                   </>
+                 ) : (
+                   <Alert severity="success" sx={{ justifyContent: 'center' }}>Thanks for your feedback!</Alert>
+                 )}
+               </Box>
+             )}
 
           </Paper>
         )}

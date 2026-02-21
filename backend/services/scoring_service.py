@@ -49,6 +49,13 @@ class ScoringService:
         
         # Take the SINGLE BEST match (if one paragraph supports it, it's true)
         raw_score = float(cosine_scores.max())
+
+        # --- NEW STRICT CUTOFF ---
+        # If the score is below 0.35, the documents are completely irrelevant.
+        if raw_score < 0.35:
+            return 0.0, "Answer generated from AI's internal knowledge. No relevant documents found in the Knowledge Base.", [], {
+                "consistency": 0, "semantic": 0, "completeness": 0, "precision": 0
+            }
         
         # --- THE "CURVE" LOGIC ---
         # Raw AI similarity rarely hits 1.0 perfectly. We apply a curve to boost "good" scores to "perfect".
