@@ -47,6 +47,7 @@ class FeedbackResponse(BaseModel):
 class QueryRequest(BaseModel):
     """Request model for user question submission"""
     question: str = Field(..., min_length=1, max_length=1000, description="User's question")
+    session_id: Optional[int] = Field(None, description="Optional ID of existing chat session")
     
     class Config:
         json_schema_extra = {
@@ -54,6 +55,14 @@ class QueryRequest(BaseModel):
                 "question": "What is the confidence scoring framework?"
             }
         }
+
+class SessionResponse(BaseModel):
+    id: int
+    title: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
 
 class Citation(BaseModel):
     """Citation information for supporting evidence"""
@@ -67,6 +76,7 @@ class QueryResponse(BaseModel):
     """Response model for AI-generated answer with confidence score"""
     # NEW: ID to link feedback later
     history_id: Optional[int] = Field(None, description="Database ID of this chat interaction")
+    session_id: Optional[int] = Field(None, description="Current Chat Session ID")
     
     question: str = Field(..., description="Original user question")
     answer: str = Field(..., description="AI-generated answer")

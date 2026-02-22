@@ -1,7 +1,7 @@
 """
 API endpoint definitions
 Modified for Retrieval-Augmented Verification (Blind Generation + Evidence Grading)
-Updated with Auth, History, Role-Based Access Control, and Document Management
+Updated with Auth, History (Session Support), Role-Based Access Control, and Document Management
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -11,12 +11,13 @@ from pathlib import Path
 import time
 import logging
 from datetime import datetime
+from typing import List # Added List import
 
 # --- LOCAL IMPORTS ---
 from api.models.schemas import (
     QueryRequest, QueryResponse, UploadResponse, 
     StatusResponse, UserCreate, UserResponse, Token,
-    FeedbackRequest, FeedbackResponse, Citation
+    FeedbackRequest, FeedbackResponse, Citation, SessionResponse
 )
 from services.pdf_processor import PDFProcessor
 from services.chroma_service import ChromaService
@@ -28,7 +29,8 @@ from core.security import (
     create_access_token, get_current_user, 
     get_current_active_admin, get_password_hash, verify_password
 )
-from core.database import get_db, User, ChatHistory, Feedback, Document
+# Note: Imported Session as ChatSession to avoid conflicts with SQLAlchemy's Session
+from core.database import get_db, User, ChatHistory, Feedback, Document, Session as ChatSession
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -89,47 +91,66 @@ async def submit_query(
 ):
     start_time = time.time()
     try:
-        answer = llama_service.generate_answer(request.question, context=None)
+        # --- 1. SESSION MANAGEMENT & AUTO-TITLING ---
+        session_id = request.session_id
+        
+        if not session_id:
+            # Create a new session with an auto-generated title (First 5 words of prompt)
+            words = request.question.split()
+            title = " ".join(words[:5]) + ("..." if len(words) > 5 else "")
+            
+            new_session = ChatSession(user_id=current_user.id, title=title)
+            db.add(new_session)
+            db.commit()
+            db.refresh(new_session)
+            session_id = new_session.id
+        else:
+            # Verify the session belongs to the user
+            session_db = db.query(ChatSession).filter(
+                ChatSession.id == session_id,
+                ChatSession.user_id == current_user.id
+            ).first()
+            if not session_db:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+        # --- 2. CONTEXT RESTORATION ---
+        # Fetch the last 5 messages from this session to give the LLM memory
+        past_messages = db.query(ChatHistory).filter(
+            ChatHistory.session_id == session_id
+        ).order_by(ChatHistory.timestamp.desc()).limit(5).all()
+        
+        context_string = ""
+        if past_messages:
+            # Reverse to chronological order so it reads naturally to the AI
+            for msg in reversed(past_messages):
+                context_string += f"User: {msg.question}\nAI: {msg.answer}\n\n"
+        
+        # --- 3. GENERATE ANSWER ---
+        # Pass the context string to the Llama service
+        answer = llama_service.generate_answer(request.question, context=context_string if context_string else None)
         retrieved_passages = chroma_service.search(request.question, top_k=3)
         
+        # --- 4. SCORING & SAVING ---
         if not retrieved_passages:
-            history_entry = ChatHistory(
-                user_id=current_user.id,
-                question=request.question,
-                answer=answer,
-                confidence_score=0.0
-            )
-            db.add(history_entry)
-            db.commit()
-            
-            return QueryResponse(
-                history_id=history_entry.id,
-                question=request.question,
-                answer=answer,
-                confidence_score=0.0,
-                confidence_label="Unverified - No Data",
-                explanation="The AI generated an answer, but no documents were found to verify it.",
-                citations=[],
-                score_breakdown={"consistency": 0, "semantic": 0, "completeness": 0, "precision": 0},
-                timestamp=datetime.now(),
-                processing_time_ms=round((time.time() - start_time) * 1000, 2)
-            )
-        
-        confidence_score, explanation, citations, score_breakdown = scoring_service.compute_confidence_score(
-            answer=answer,
-            question=request.question,
-            retrieved_passages=retrieved_passages
-        )
-        
-        if confidence_score >= settings.HIGH_CONFIDENCE_THRESHOLD:
-            confidence_label = "High - Verified"
-        elif confidence_score >= settings.MEDIUM_CONFIDENCE_THRESHOLD:
-            confidence_label = "Medium - Partially Verified"
+            confidence_score = 0.0
+            confidence_label = "Unverified - No Data"
+            explanation = "No documents found to verify."
+            citations = []
+            score_breakdown = {"consistency": 0, "semantic": 0, "completeness": 0, "precision": 0}
         else:
-            confidence_label = "Low - Unverified"
+            confidence_score, explanation, citations, score_breakdown = scoring_service.compute_confidence_score(
+                answer=answer, question=request.question, retrieved_passages=retrieved_passages
+            )
+            if confidence_score >= settings.HIGH_CONFIDENCE_THRESHOLD:
+                confidence_label = "High - Verified"
+            elif confidence_score >= settings.MEDIUM_CONFIDENCE_THRESHOLD:
+                confidence_label = "Medium - Partially Verified"
+            else:
+                confidence_label = "Low - Unverified"
         
         history_entry = ChatHistory(
             user_id=current_user.id,
+            session_id=session_id,  # Link to the session
             question=request.question,
             answer=answer,
             confidence_score=confidence_score
@@ -140,6 +161,7 @@ async def submit_query(
         
         return QueryResponse(
             history_id=history_entry.id,
+            session_id=session_id,
             question=request.question,
             answer=answer,
             confidence_score=confidence_score,
@@ -177,33 +199,31 @@ def submit_feedback(
     db.commit()
     return {"message": "Feedback received successfully"}
 
-@router.get("/history")
-def get_my_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Get the list of past conversations for the sidebar"""
-    history = db.query(ChatHistory).filter(ChatHistory.user_id == current_user.id).order_by(ChatHistory.timestamp.desc()).all()
-    return history
+@router.get("/history", response_model=List[SessionResponse])
+def get_my_sessions(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Fetch list of sessions for the sidebar"""
+    sessions = db.query(ChatSession).filter(
+        ChatSession.user_id == current_user.id
+    ).order_by(ChatSession.created_at.desc()).all()
+    return sessions
 
-# ---> THIS IS THE MISSING ENDPOINT THAT WAS CAUSING THE BLANK PAGE <---
-@router.get("/history/{history_id}")
-def get_history_detail(
-    history_id: int, 
-    db: Session = Depends(get_db)
-):
-    """Fetch a specific chat history record by ID without strict user matching"""
-    history_item = db.query(ChatHistory).filter(ChatHistory.id == history_id).first()
+@router.get("/session/{session_id}")
+def get_session_details(session_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Fetch all messages inside a specific session"""
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id,
+        ChatSession.user_id == current_user.id
+    ).first()
     
-    if not history_item:
-        raise HTTPException(status_code=404, detail=f"History ID {history_id} not found")
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    messages = db.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.timestamp.asc()).all()
     
     return {
-        "history_id": history_item.id,
-        "question": history_item.question,
-        "answer": history_item.answer,
-        "confidence_score": history_item.confidence_score,
-        "confidence_label": "Historical Record",
-        "explanation": "This is a saved historical record.",
-        "citations": [], 
-        "timestamp": history_item.timestamp
+        "session_id": session.id,
+        "title": session.title,
+        "messages": messages
     }
 
 # ==========================================
