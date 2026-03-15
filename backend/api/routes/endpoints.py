@@ -1,7 +1,7 @@
 """
 API endpoint definitions
 Modified for Retrieval-Augmented Verification (Blind Generation + Evidence Grading)
-Updated with Auth, History, Role-Based Access Control, and Document Management
+Updated with Auth, History (Session Support), Role-Based Access Control, and Document Management
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -11,12 +11,13 @@ from pathlib import Path
 import time
 import logging
 from datetime import datetime
+from typing import List # Added List import
 
 # --- LOCAL IMPORTS ---
 from api.models.schemas import (
     QueryRequest, QueryResponse, UploadResponse, 
     StatusResponse, UserCreate, UserResponse, Token,
-    FeedbackRequest, FeedbackResponse, Citation
+    FeedbackRequest, FeedbackResponse, Citation, SessionResponse
 )
 from services.pdf_processor import PDFProcessor
 from services.chroma_service import ChromaService
@@ -28,7 +29,8 @@ from core.security import (
     create_access_token, get_current_user, 
     get_current_active_admin, get_password_hash, verify_password
 )
-from core.database import get_db, User, ChatHistory, Feedback, Document # <--- Added Document
+# Note: Imported Session as ChatSession to avoid conflicts with SQLAlchemy's Session
+from core.database import get_db, User, ChatHistory, Feedback, Document, Session as ChatSession
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Create router
 router = APIRouter()
 
-# Initialize services (singleton pattern)
+# Initialize services
 pdf_processor = PDFProcessor()
 chroma_service = ChromaService()
 llama_service = LlamaService()
@@ -49,15 +51,11 @@ scoring_service = ScoringService()
 
 @router.post("/auth/register", response_model=UserResponse)
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    """Create a new user account"""
-    # Check if user already exists
     db_user = db.query(User).filter(User.email == user.email).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
     hashed_pwd = get_password_hash(user.password)
-    
-    # First user created is automatically an Admin, others are Users
     is_first_user = db.query(User).count() == 0
     role = "admin" if is_first_user else "user"
     
@@ -67,10 +65,8 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     db.refresh(new_user)
     return new_user
 
-
 @router.post("/auth/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """Login to get an access token"""
     user = db.query(User).filter(User.email == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
@@ -84,90 +80,88 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
 
 # ==========================================
-# 2. CHAT & QUERY ROUTES (Authenticated)
+# 2. CHAT & QUERY ROUTES
 # ==========================================
 
 @router.post("/query", response_model=QueryResponse)
 async def submit_query(
     request: QueryRequest, 
-    current_user: User = Depends(get_current_user), # <-- Requires Login
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Submit a question for 'Blind Generation' and 'Evidence-Based Verification'
-    NOW SAVES TO HISTORY!
-    """
     start_time = time.time()
-    
     try:
-        logger.info(f"User {current_user.email} query: {request.question[:100]}...")
+        # --- 1. SESSION MANAGEMENT & AUTO-TITLING ---
+        session_id = request.session_id
         
-        # --- PHASE 1: GENERATION (Blind) ---
-        logger.info("Generating 'Blind' answer...")
-        answer = llama_service.generate_answer(request.question, context=None)
+        if not session_id:
+            # Create a new session with an auto-generated title (First 5 words of prompt)
+            words = request.question.split()
+            title = " ".join(words[:5]) + ("..." if len(words) > 5 else "")
+            
+            new_session = ChatSession(user_id=current_user.id, title=title)
+            db.add(new_session)
+            db.commit()
+            db.refresh(new_session)
+            session_id = new_session.id
+        else:
+            # Verify the session belongs to the user
+            session_db = db.query(ChatSession).filter(
+                ChatSession.id == session_id,
+                ChatSession.user_id == current_user.id
+            ).first()
+            if not session_db:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+        # --- 2. CONTEXT RESTORATION ---
+        # Fetch the last 5 messages from this session to give the LLM memory
+        past_messages = db.query(ChatHistory).filter(
+            ChatHistory.session_id == session_id
+        ).order_by(ChatHistory.timestamp.desc()).limit(5).all()
         
-        # --- PHASE 2: RETRIEVAL ---
-        logger.info("Retrieving ground truth documents...")
+        context_string = ""
+        if past_messages:
+            # Reverse to chronological order so it reads naturally to the AI
+            for msg in reversed(past_messages):
+                context_string += f"User: {msg.question}\nAI: {msg.answer}\n\n"
+        
+        # --- 3. GENERATE ANSWER ---
+        # Pass the context string to the Llama service
+        answer = llama_service.generate_answer(request.question, context=context_string if context_string else None)
         retrieved_passages = chroma_service.search(request.question, top_k=3)
         
-        # Handle case where no documents exist
+        # --- 4. SCORING & SAVING ---
         if not retrieved_passages:
-            logger.warning("No relevant information found.")
-            
-            # Save unverified attempt to DB
-            history_entry = ChatHistory(
-                user_id=current_user.id,
-                question=request.question,
-                answer=answer,
-                confidence_score=0.0
-            )
-            db.add(history_entry)
-            db.commit()
-            
-            return QueryResponse(
-                history_id=history_entry.id,
-                question=request.question,
-                answer=answer,
-                confidence_score=0.0,
-                confidence_label="Unverified - No Data",
-                explanation="The AI generated an answer, but no documents were found to verify it.",
-                citations=[],
-                score_breakdown={"consistency": 0, "semantic": 0, "completeness": 0, "precision": 0},
-                timestamp=datetime.now(),
-                processing_time_ms=round((time.time() - start_time) * 1000, 2)
-            )
-        
-        # --- PHASE 3: SCORING ---
-        logger.info("Computing confidence score...")
-        confidence_score, explanation, citations, score_breakdown = scoring_service.compute_confidence_score(
-            answer=answer,
-            question=request.question,
-            retrieved_passages=retrieved_passages
-        )
-        
-        # Determine confidence label
-        if confidence_score >= settings.HIGH_CONFIDENCE_THRESHOLD:
-            confidence_label = "High - Verified"
-        elif confidence_score >= settings.MEDIUM_CONFIDENCE_THRESHOLD:
-            confidence_label = "Medium - Partially Verified"
+            confidence_score = 0.0
+            confidence_label = "Unverified - No Data"
+            explanation = "No documents found to verify."
+            citations = []
+            score_breakdown = {"consistency": 0, "semantic": 0, "completeness": 0, "precision": 0}
         else:
-            confidence_label = "Low - Unverified"
+            confidence_score, explanation, citations, score_breakdown = scoring_service.compute_confidence_score(
+                answer=answer, question=request.question, retrieved_passages=retrieved_passages
+            )
+            if confidence_score >= settings.HIGH_CONFIDENCE_THRESHOLD:
+                confidence_label = "High - Verified"
+            elif confidence_score >= settings.MEDIUM_CONFIDENCE_THRESHOLD:
+                confidence_label = "Medium - Partially Verified"
+            else:
+                confidence_label = "Low - Unverified"
         
-        # --- SAVE TO DATABASE ---
         history_entry = ChatHistory(
             user_id=current_user.id,
+            session_id=session_id,  # Link to the session
             question=request.question,
             answer=answer,
             confidence_score=confidence_score
         )
         db.add(history_entry)
         db.commit()
-        db.refresh(history_entry) # Get ID for frontend
-        
-        processing_time = (time.time() - start_time) * 1000
+        db.refresh(history_entry)
         
         return QueryResponse(
             history_id=history_entry.id,
+            session_id=session_id,
             question=request.question,
             answer=answer,
             confidence_score=confidence_score,
@@ -176,13 +170,12 @@ async def submit_query(
             citations=citations,
             score_breakdown=score_breakdown,
             timestamp=datetime.now(),
-            processing_time_ms=round(processing_time, 2)
+            processing_time_ms=round((time.time() - start_time) * 1000, 2)
         )
         
     except Exception as e:
         logger.error(f"Error processing query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
-
 
 @router.post("/feedback", response_model=FeedbackResponse)
 def submit_feedback(
@@ -190,8 +183,6 @@ def submit_feedback(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """User rates an answer (1-5 stars)"""
-    # Verify the history item belongs to the user
     history_item = db.query(ChatHistory).filter(ChatHistory.id == feedback.history_id).first()
     
     if not history_item:
@@ -208,46 +199,47 @@ def submit_feedback(
     db.commit()
     return {"message": "Feedback received successfully"}
 
+@router.get("/history", response_model=List[SessionResponse])
+def get_my_sessions(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Fetch list of sessions for the sidebar"""
+    sessions = db.query(ChatSession).filter(
+        ChatSession.user_id == current_user.id
+    ).order_by(ChatSession.created_at.desc()).all()
+    return sessions
 
-@router.get("/history")
-def get_my_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Get past conversations for the sidebar"""
-    history = db.query(ChatHistory).filter(ChatHistory.user_id == current_user.id).order_by(ChatHistory.timestamp.desc()).all()
-    return history
-
+@router.get("/session/{session_id}")
+def get_session_details(session_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Fetch all messages inside a specific session"""
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id,
+        ChatSession.user_id == current_user.id
+    ).first()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    messages = db.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.timestamp.asc()).all()
+    
+    return {
+        "session_id": session.id,
+        "title": session.title,
+        "messages": messages
+    }
 
 # ==========================================
-# 3. ADMIN ROUTES (Admin Only)
+# 3. ADMIN ROUTES 
 # ==========================================
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_active_admin), # <-- ADMIN ONLY CHECK
+    current_user: User = Depends(get_current_active_admin), 
     db: Session = Depends(get_db)
 ):
-    """
-    Upload a PDF document to the knowledge base (Admin only)
-    """
     try:
-        logger.info(f"Received file upload from admin {current_user.email}: {file.filename}")
-        
-        # Validate file type
         if not file.filename.endswith('.pdf'):
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
         
-        # Check file size
-        try:
-            content = await file.read()
-            file_size_mb = len(content) / (1024 * 1024)
-            await file.seek(0)
-            
-            if file_size_mb > settings.MAX_UPLOAD_SIZE_MB:
-                raise HTTPException(status_code=400, detail=f"File size exceeds maximum of {settings.MAX_UPLOAD_SIZE_MB}MB")
-        except Exception as e:
-            logger.error(f"Error checking file size: {e}")
-        
-        # Save file temporarily
         upload_dir = Path(settings.UPLOAD_DIRECTORY)
         upload_dir.mkdir(parents=True, exist_ok=True)
         
@@ -257,21 +249,12 @@ async def upload_document(
             content = await file.read()
             f.write(content)
         
-        logger.info(f"File saved to: {file_path}")
-        
-        # Process PDF
-        logger.info("Processing PDF...")
         chunks = pdf_processor.process_pdf(str(file_path), document_id=file.filename)
-        
         if not chunks:
             raise HTTPException(status_code=400, detail="No text could be extracted from the PDF")
         
-        # Add to ChromaDB
-        logger.info(f"Adding {len(chunks)} chunks to knowledge base...")
         num_added = chroma_service.add_documents(chunks)
         
-        # --- NEW: Save to SQL for Admin Dashboard ---
-        # Check if doc exists (overwrite metadata if so)
         existing_doc = db.query(Document).filter(Document.filename == file.filename).first()
         if existing_doc:
             existing_doc.upload_date = datetime.utcnow()
@@ -281,9 +264,8 @@ async def upload_document(
             db.add(new_doc)
         
         db.commit()
-        # ---------------------------------------------
 
-        response = UploadResponse(
+        return UploadResponse(
             success=True,
             message=f"Document '{file.filename}' uploaded and processed successfully",
             filename=file.filename,
@@ -291,30 +273,20 @@ async def upload_document(
             chunks_created=num_added
         )
         
-        logger.info(f"Upload complete: {num_added} chunks added")
-        return response
-        
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error uploading document: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
 
-
 @router.get("/admin/analytics")
 def get_analytics(
     current_user: User = Depends(get_current_active_admin),
     db: Session = Depends(get_db)
 ):
-    """Get feedback statistics for dashboard charts"""
-    # 1. Average Rating
     avg_rating = db.query(func.avg(Feedback.rating)).scalar() or 0
+    rating_counts = db.query(Feedback.rating, func.count(Feedback.rating)).group_by(Feedback.rating).all()
     
-    # 2. Rating Distribution
-    rating_counts = db.query(Feedback.rating, func.count(Feedback.rating))\
-                      .group_by(Feedback.rating).all()
-    
-    # Format for Frontend Charts
     distribution = [{"name": f"{i} Stars", "value": 0} for i in range(1, 6)]
     for r, count in rating_counts:
         if 1 <= r <= 5:
@@ -326,15 +298,12 @@ def get_analytics(
         "distribution": distribution
     }
 
-
 @router.get("/admin/documents")
 def list_documents(
     current_user: User = Depends(get_current_active_admin),
     db: Session = Depends(get_db)
 ):
-    """List all managed documents"""
     return db.query(Document).order_by(Document.upload_date.desc()).all()
-
 
 @router.delete("/admin/documents/{doc_id}")
 def delete_document(
@@ -342,20 +311,37 @@ def delete_document(
     current_user: User = Depends(get_current_active_admin),
     db: Session = Depends(get_db)
 ):
-    """Delete a document from SQL and Vector DB"""
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # 1. Delete from Chroma (Vectors)
     chroma_service.delete_document(doc.filename)
-    
-    # 2. Delete from SQL (Metadata)
     db.delete(doc)
     db.commit()
     
     return {"message": f"Deleted {doc.filename}"}
 
+@router.get("/admin/feedback")
+def get_admin_feedback_logs(
+    current_user: User = Depends(get_current_active_admin),
+    db: Session = Depends(get_db)
+):
+    feedbacks = db.query(Feedback).order_by(Feedback.created_at.desc()).all()
+    
+    formatted_feedback = []
+    for fb in feedbacks:
+        user_email = "Unknown User"
+        if fb.chat_history and fb.chat_history.user:
+            user_email = fb.chat_history.user.email
+            
+        formatted_feedback.append({
+            "timestamp": fb.created_at,
+            "user_email": user_email,
+            "rating": fb.rating,
+            "comment": fb.comment
+        })
+        
+    return formatted_feedback
 
 # ==========================================
 # 4. SYSTEM ROUTES
@@ -363,7 +349,6 @@ def delete_document(
 
 @router.get("/status", response_model=StatusResponse)
 async def get_status():
-    """Get system status and health check"""
     try:
         kb_ready = chroma_service.is_ready()
         llm_ready = llama_service.is_ready()
@@ -378,7 +363,6 @@ async def get_status():
             documents_count=doc_count
         )
     except Exception as e:
-        logger.error(f"Error getting status: {e}")
         return StatusResponse(
             status="error",
             knowledge_base_ready=False,
@@ -386,8 +370,6 @@ async def get_status():
             documents_count=0
         )
 
-
 @router.get("/health")
 async def health_check():
-    """Simple health check endpoint"""
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
