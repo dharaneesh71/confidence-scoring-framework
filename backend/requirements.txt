@@ -13,7 +13,7 @@ nltk==3.9.1
 transformers==4.45.1
 
 # LLM Integration
-torch==2.5.0
+#torch==2.5.0
 huggingface-hub==0.25.1
 
 # PDF Processing
