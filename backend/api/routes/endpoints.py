@@ -11,7 +11,7 @@ from pathlib import Path
 import time
 import logging
 from datetime import datetime
-from typing import List # Added List import
+from typing import List
 
 # --- LOCAL IMPORTS ---
 from api.models.schemas import (
@@ -29,21 +29,17 @@ from core.security import (
     create_access_token, get_current_user, 
     get_current_active_admin, get_password_hash, verify_password
 )
-# Note: Imported Session as ChatSession to avoid conflicts with SQLAlchemy's Session
 from core.database import get_db, User, ChatHistory, Feedback, Document, Session as ChatSession
 from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Create router
 router = APIRouter()
 
-# Initialize services
 pdf_processor = PDFProcessor()
 chroma_service = ChromaService()
 llama_service = LlamaService()
 scoring_service = ScoringService()
-
 
 # ==========================================
 # 1. AUTHENTICATION ROUTES
@@ -78,7 +74,6 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = create_access_token(subject=user.email, role=user.role)
     return {"access_token": access_token, "token_type": "bearer", "role": user.role}
 
-
 # ==========================================
 # 2. CHAT & QUERY ROUTES
 # ==========================================
@@ -91,11 +86,9 @@ async def submit_query(
 ):
     start_time = time.time()
     try:
-        # --- 1. SESSION MANAGEMENT & AUTO-TITLING ---
         session_id = request.session_id
         
         if not session_id:
-            # Create a new session with an auto-generated title (First 5 words of prompt)
             words = request.question.split()
             title = " ".join(words[:5]) + ("..." if len(words) > 5 else "")
             
@@ -105,7 +98,6 @@ async def submit_query(
             db.refresh(new_session)
             session_id = new_session.id
         else:
-            # Verify the session belongs to the user
             session_db = db.query(ChatSession).filter(
                 ChatSession.id == session_id,
                 ChatSession.user_id == current_user.id
@@ -113,24 +105,18 @@ async def submit_query(
             if not session_db:
                 raise HTTPException(status_code=404, detail="Session not found")
 
-        # --- 2. CONTEXT RESTORATION ---
-        # Fetch the last 5 messages from this session to give the LLM memory
         past_messages = db.query(ChatHistory).filter(
             ChatHistory.session_id == session_id
         ).order_by(ChatHistory.timestamp.desc()).limit(5).all()
         
         context_string = ""
         if past_messages:
-            # Reverse to chronological order so it reads naturally to the AI
             for msg in reversed(past_messages):
                 context_string += f"User: {msg.question}\nAI: {msg.answer}\n\n"
         
-        # --- 3. GENERATE ANSWER ---
-        # Pass the context string to the Llama service
         answer = llama_service.generate_answer(request.question, context=context_string if context_string else None)
         retrieved_passages = chroma_service.search(request.question, top_k=3)
         
-        # --- 4. SCORING & SAVING ---
         if not retrieved_passages:
             confidence_score = 0.0
             confidence_label = "Unverified - No Data"
@@ -150,7 +136,7 @@ async def submit_query(
         
         history_entry = ChatHistory(
             user_id=current_user.id,
-            session_id=session_id,  # Link to the session
+            session_id=session_id,
             question=request.question,
             answer=answer,
             confidence_score=confidence_score
@@ -201,7 +187,6 @@ def submit_feedback(
 
 @router.get("/history", response_model=List[SessionResponse])
 def get_my_sessions(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Fetch list of sessions for the sidebar"""
     sessions = db.query(ChatSession).filter(
         ChatSession.user_id == current_user.id
     ).order_by(ChatSession.created_at.desc()).all()
@@ -209,7 +194,6 @@ def get_my_sessions(current_user: User = Depends(get_current_user), db: Session 
 
 @router.get("/session/{session_id}")
 def get_session_details(session_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Fetch all messages inside a specific session"""
     session = db.query(ChatSession).filter(
         ChatSession.id == session_id,
         ChatSession.user_id == current_user.id
@@ -223,6 +207,36 @@ def get_session_details(session_id: int, current_user: User = Depends(get_curren
     return {
         "session_id": session.id,
         "title": session.title,
+        "messages": messages
+    }
+
+# --- NEW SPRINT 3 ANALYTICS ENDPOINT ---
+@router.get("/session/{session_id}/analytics")
+def get_session_analytics(
+    session_id: int, 
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id,
+        ChatSession.user_id == current_user.id
+    ).first()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    messages = db.query(ChatHistory).filter(
+        ChatHistory.session_id == session_id
+    ).order_by(ChatHistory.timestamp.asc()).all()
+    
+    scores = [m.confidence_score for m in messages if m.confidence_score is not None]
+    avg_score = sum(scores) / len(scores) if scores else 0
+    
+    return {
+        "session_id": session_id,
+        "average_confidence": round(avg_score, 2),
+        "total_interactions": len(messages),
+        "trend": [{"turn": i+1, "score": round(s * 100, 1)} for i, s in enumerate(scores)],
         "messages": messages
     }
 

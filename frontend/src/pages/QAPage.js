@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import {
   Container, Paper, TextField, Button, Typography, Box,
   CircularProgress, Alert, Chip, Card, CardContent, LinearProgress,
@@ -150,9 +152,11 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
   );
 };
 
-
 // --- 2. MAIN QA PAGE COMPONENT ---
-const QAPage = ({ selectedSessionId, clearSelection }) => {
+const QAPage = ({ clearSelection }) => {
+  const { sessionId } = useParams(); // Task #7: Routing URL params
+  const navigate = useNavigate();
+
   const theme = useTheme();
   const { user } = useAuth();
   
@@ -172,23 +176,31 @@ const QAPage = ({ selectedSessionId, clearSelection }) => {
     boxShadow: theme.palette.mode === 'dark' ? '0 8px 32px rgba(0,0,0,0.3)' : '0 8px 32px rgba(0,0,0,0.05)',
   };
 
+  // Task #5: Format data for Recharts Trend Line
+  const chartData = messages
+    .filter(m => m.confidence_score !== undefined && m.confidence_score !== null)
+    .map((m, index) => ({
+      turn: index + 1,
+      score: Math.round(m.confidence_score * 100)
+    }));
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
   useEffect(() => {
-    if (selectedSessionId) {
-      loadSession(selectedSessionId);
+    if (sessionId) {
+      loadSession(sessionId);
     } else {
       handleStartNew();
     }
-  }, [selectedSessionId]);
+  }, [sessionId]);
 
-  const loadSession = async (sessionId) => {
+  const loadSession = async (id) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`http://localhost:8000/api/session/${sessionId}`, {
+      const response = await fetch(`http://localhost:8000/api/session/${id}`, {
         headers: { 'Authorization': `Bearer ${user.token}` }
       });
       if (!response.ok) throw new Error("Session not found");
@@ -203,11 +215,13 @@ const QAPage = ({ selectedSessionId, clearSelection }) => {
     }
   };
 
+  // Task #2: New Chat Logic
   const handleStartNew = () => {
     setCurrentSessionId(null);
     setMessages([]);
     setQuestion('');
     setError(null);
+    navigate('/chat');
     if(clearSelection) clearSelection();
   };
 
@@ -240,6 +254,7 @@ const QAPage = ({ selectedSessionId, clearSelection }) => {
       
       if (!currentSessionId && data.session_id) {
         setCurrentSessionId(data.session_id);
+        navigate(`/chat/${data.session_id}`); // Route to new ID
       }
 
       setMessages(prev => {
@@ -279,6 +294,28 @@ const QAPage = ({ selectedSessionId, clearSelection }) => {
           Continuous Evidence-Based Chat
         </Typography>
       </Box>
+
+      {/* Task #5: TRUST SCORE MINI-GRAPH (RECHARTS) */}
+      {chartData.length > 1 && (
+        <Paper sx={{ p: 2, mb: 3, mx: { xs: 1, md: 3 }, bgcolor: 'rgba(0, 209, 255, 0.05)', border: '1px solid rgba(0, 209, 255, 0.2)' }}>
+          <Typography variant="caption" sx={{ color: '#00d1ff', fontWeight: 'bold' }}>SESSION TRUST SCORE TREND (%)</Typography>
+          <Box sx={{ height: 80, width: '100%', mt: 1 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData}>
+                <defs>
+                  <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#00d1ff" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#00d1ff" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <Area type="monotone" dataKey="score" stroke="#00d1ff" fillOpacity={1} fill="url(#colorScore)" strokeWidth={2} />
+                <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', color: '#fff' }} />
+                <YAxis hide domain={[0, 100]} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </Box>
+        </Paper>
+      )}
 
       {/* CHAT HISTORY AREA (Scrollable) */}
       <Box sx={{ flexGrow: 1, overflowY: 'auto', px: { xs: 1, md: 3 }, mb: 3, display: 'flex', flexDirection: 'column' }}>

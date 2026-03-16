@@ -2,65 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 import {
   AppBar, Toolbar, Typography, Button, Box,
-  CssBaseline, ThemeProvider, createTheme, IconButton, Drawer, List, ListItem, ListItemText, Divider, ListItemButton
+  CssBaseline, ThemeProvider, createTheme, IconButton
 } from '@mui/material';
 import { 
   AdminPanelSettings, Brightness4, Brightness7, 
-  Logout, History, Menu as MenuIcon, Settings, ChatBubbleOutline 
-} from '@mui/icons-material';
+  Logout, Settings, ChatBubbleOutline, Menu as MenuIcon 
+} from '@mui/icons-material'; // <-- MenuIcon is back!
 
 import QAPage from './pages/QAPage';
 import AdminPage from './pages/AdminPage';
 import LoginPage from './pages/LoginPage';
+import Sidebar from './components/Sidebar';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import './App.css';
 
-// --- SIDEBAR COMPONENT ---
-const Sidebar = ({ open, onClose, onSelectSession }) => {
-  const [sessions, setSessions] = useState([]);
-  const { user } = useAuth();
-
-  useEffect(() => {
-    if (open && user) {
-      fetch('http://localhost:8000/api/history', {
-        headers: { Authorization: `Bearer ${user.token}` }
-      })
-      .then(res => res.json())
-      .then(data => setSessions(data))
-      .catch(err => console.error(err));
-    }
-  }, [open, user]);
-
-  return (
-    <Drawer anchor="left" open={open} onClose={onClose}>
-      <Box sx={{ width: 280, p: 2 }}>
-        <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-          <History /> Chat Sessions
-        </Typography>
-        <Divider />
-        <List>
-          {sessions.length === 0 ? (
-            <Typography variant="body2" sx={{ p: 2, color: 'gray' }}>No history yet.</Typography>
-          ) : (
-            sessions.map((session) => (
-              <ListItem disablePadding key={session.id}>
-                <ListItemButton onClick={() => onSelectSession(session.id)}>
-                  <ListItemText 
-                    primary={session.title} 
-                    secondary={new Date(session.created_at).toLocaleDateString()} 
-                    primaryTypographyProps={{ noWrap: true, fontWeight: 'bold' }}
-                  />
-                </ListItemButton>
-              </ListItem>
-            ))
-          )}
-        </List>
-      </Box>
-    </Drawer>
-  );
-};
-
-// --- PROTECTED ROUTE COMPONENT ---
 const PrivateRoute = ({ children, adminOnly = false }) => {
   const { user } = useAuth();
   if (!user) return <Navigate to="/login" />;
@@ -68,11 +23,10 @@ const PrivateRoute = ({ children, adminOnly = false }) => {
   return children;
 };
 
-// --- MAIN LAYOUT ---
 function AppContent() {
   const [mode, setMode] = useState('dark');
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [selectedSessionId, setSelectedSessionId] = useState(null);
+  const [sessions, setSessions] = useState([]);
   
   const { user, logout } = useAuth();
   const location = useLocation();
@@ -87,21 +41,35 @@ function AppContent() {
 
   const isLoginPage = location.pathname === '/login';
 
-  const handleSessionSelect = (id) => {
-    setSelectedSessionId(id);
-    setSidebarOpen(false);
-  };
+  useEffect(() => {
+    if (user && !isLoginPage) {
+      fetch('http://localhost:8000/api/history', {
+        headers: { Authorization: `Bearer ${user.token}` }
+      })
+      .then(res => res.json())
+      .then(data => setSessions(data))
+      .catch(err => console.error(err));
+    }
+  }, [user, isLoginPage, location.pathname]); 
 
-  // Helper for dynamic colors
   const navColor = mode === 'dark' ? '#ffffff' : '#000000';
   const navBg = mode === 'dark' ? '#0f172a' : '#f5f5f5';
 
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <div className={`App ${mode === 'dark' ? 'theme-dark' : 'theme-light'}`}>
+      <div className={`App ${mode === 'dark' ? 'theme-dark' : 'theme-light'}`} style={{ display: 'flex', minHeight: '100vh', flexDirection: 'column' }}>
         
-        {/* DYNAMIC TOP NAVBAR - BLENDS WITH BOTH MODES */}
+        {/* Slide-out History Drawer */}
+        {!isLoginPage && user && (
+           <Sidebar 
+             sessions={sessions} 
+             isOpen={sidebarOpen} 
+             onToggle={() => setSidebarOpen(false)} 
+           />
+        )}
+
+        {/* DYNAMIC TOP NAVBAR */}
         {!isLoginPage && (
           <AppBar 
             position="sticky" 
@@ -116,8 +84,8 @@ function AppContent() {
           >
             <Toolbar sx={{ display: 'flex', justifyContent: 'space-between' }}>
               
-              {/* LEFT SIDE: Hamburger & Title */}
-              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+              {/* LEFT SIDE: The "Three Dashes" History Button & Title */}
+              <Box sx={{ display: 'flex', alignItems: 'center' }}> 
                 {user && (
                   <IconButton 
                     edge="start" 
@@ -134,24 +102,21 @@ function AppContent() {
 
               {/* RIGHT SIDE: Controls */}
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                
-                {/* Light/Dark Toggle */}
                 <IconButton onClick={() => setMode(prev => prev === 'light' ? 'dark' : 'light')} sx={{ color: `${navColor} !important` }}>
                   {mode === 'dark' ? <Brightness7 /> : <Brightness4 />}
                 </IconButton>
 
                 {user ? (
                   <>
-                    <IconButton sx={{ color: `${navColor} !important` }}>
+                    <IconButton sx={{ color: `${navColor} !important`, display: { xs: 'none', sm: 'inline-flex' } }}>
                       <Settings fontSize="small" />
                     </IconButton>
 
                     <Button 
                       component={Link} 
-                      to="/" 
-                      onClick={() => setSelectedSessionId(null)} 
+                      to="/chat" 
                       startIcon={<ChatBubbleOutline fontSize="small" />} 
-                      sx={{ color: `${navColor} !important`, fontWeight: 'bold', fontSize: '0.85rem' }}
+                      sx={{ color: `${navColor} !important`, fontWeight: 'bold', fontSize: '0.85rem', display: { xs: 'none', sm: 'inline-flex' } }}
                     >
                       NEW CHAT
                     </Button>
@@ -179,27 +144,31 @@ function AppContent() {
                   <Button component={Link} to="/login" sx={{ color: `${navColor} !important`, fontWeight: 'bold' }}>LOGIN</Button>
                 )}
               </Box>
-
             </Toolbar>
           </AppBar>
         )}
 
-        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} onSelectSession={handleSessionSelect} />
-
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/" element={
-            <PrivateRoute>
-              <QAPage selectedSessionId={selectedSessionId} clearSelection={() => setSelectedSessionId(null)} />
-            </PrivateRoute>
-          } />
-          <Route path="/admin" element={
-            <PrivateRoute adminOnly={true}>
-              <AdminPage />
-            </PrivateRoute>
-          } />
-        </Routes>
-
+        <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/" element={<Navigate to="/chat" />} />
+            <Route path="/chat" element={
+              <PrivateRoute>
+                <QAPage />
+              </PrivateRoute>
+            } />
+            <Route path="/chat/:sessionId" element={
+              <PrivateRoute>
+                <QAPage />
+              </PrivateRoute>
+            } />
+            <Route path="/admin" element={
+              <PrivateRoute adminOnly={true}>
+                <AdminPage />
+              </PrivateRoute>
+            } />
+          </Routes>
+        </Box>
       </div>
     </ThemeProvider>
   );
