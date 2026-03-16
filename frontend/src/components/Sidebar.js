@@ -1,24 +1,35 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Box, Typography, List, ListItemButton, ListItemText, Drawer, Divider } from '@mui/material';
+import { Box, Typography, List, ListItemButton, ListItemText, Drawer } from '@mui/material';
 
 const Sidebar = ({ sessions, isOpen, onToggle }) => {
   const navigate = useNavigate();
 
   const groupSessions = (sessionsList) => {
     const groups = { Today: [], Yesterday: [], "Previous 7 Days": [] };
+    
+    // Normalize "now" to midnight local time
     const now = new Date();
+    now.setHours(0, 0, 0, 0); 
 
     const sorted = [...sessionsList].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     sorted.forEach(s => {
-      const date = new Date(s.created_at);
-      const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+      // Force UTC parsing to fix timezone drift
+      const dateString = s.created_at.endsWith('Z') ? s.created_at : `${s.created_at}Z`;
+      const date = new Date(dateString);
       
-      if (diffDays === 0) groups.Today.push(s);
+      // Normalize chat date to midnight local time
+      date.setHours(0, 0, 0, 0); 
+      
+      const diffDays = Math.round((now - date) / (1000 * 60 * 60 * 24));
+      
+      // If diffDays is 0 (or negative due to lingering drift), it's Today
+      if (diffDays <= 0) groups.Today.push(s);
       else if (diffDays === 1) groups.Yesterday.push(s);
       else if (diffDays <= 7) groups["Previous 7 Days"].push(s);
     });
+    
     return groups;
   };
 
