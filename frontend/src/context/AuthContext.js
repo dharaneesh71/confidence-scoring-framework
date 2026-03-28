@@ -1,5 +1,8 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
-import { jwtDecode } from "jwt-decode"; // Correct import for v4+
+import { jwtDecode } from "jwt-decode";
+
+// FIX #18: single source of truth for backend URL
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 const AuthContext = createContext(null);
 
@@ -32,7 +35,7 @@ export const AuthProvider = ({ children }) => {
       formData.append('username', email);
       formData.append('password', password);
 
-      const response = await fetch('http://localhost:8000/api/auth/login', {
+      const response = await fetch(`${API_BASE}/api/auth/login`, {
         method: 'POST',
         body: formData,
       });

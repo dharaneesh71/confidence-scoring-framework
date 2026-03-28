@@ -7,7 +7,6 @@ from chromadb.config import Settings as ChromaSettings
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Optional
 import logging
-import math
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -41,7 +40,8 @@ class ChromaService:
             # Get or create collection
             self.collection = self.client.get_or_create_collection(
                 name=settings.CHROMA_COLLECTION_NAME,
-                metadata={"description": "Ground truth documents for confidence scoring"}
+                metadata={"description": "Ground truth documents for confidence scoring",
+                           "hnsw:space": "cosine"}  # FIX #13: cosine space for SentenceTransformers
             )
             
             logger.info(f"ChromaDB initialized. Collection: {settings.CHROMA_COLLECTION_NAME}")
@@ -144,9 +144,8 @@ class ChromaService:
                 for i, doc in enumerate(results['documents'][0]):
                     distance = results['distances'][0][i]
                     
-                    # Convert L2 distance to similarity score [0, 1]
-                    similarity = math.exp(-distance)
-                    similarity = max(0.0, min(1.0, similarity))
+                    # FIX #13: cosine distance [0,2] â†’ similarity [0,1]
+                    similarity = max(0.0, min(1.0, 1.0 - distance))
                     
                     passages.append({
                         "text": doc,

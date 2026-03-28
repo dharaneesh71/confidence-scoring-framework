@@ -6,7 +6,7 @@ const Sidebar = ({ sessions, isOpen, onToggle }) => {
   const navigate = useNavigate();
 
   const groupSessions = (sessionsList) => {
-    const groups = { Today: [], Yesterday: [], "Previous 7 Days": [] };
+    const groups = { Today: [], Yesterday: [], "Previous 7 Days": [], "Older": [] };
     
     // Normalize "now" to midnight local time
     const now = new Date();
@@ -28,6 +28,7 @@ const Sidebar = ({ sessions, isOpen, onToggle }) => {
       if (diffDays <= 0) groups.Today.push(s);
       else if (diffDays === 1) groups.Yesterday.push(s);
       else if (diffDays <= 7) groups["Previous 7 Days"].push(s);
+      else { groups["Older"].push(s); }
     });
     
     return groups;

@@ -10,27 +10,22 @@ from core.config import settings
 import logging
 import uvicorn
 
-# Configure logging
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager for startup and shutdown events"""
-    # Startup
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Environment: {'Development' if settings.DEBUG_MODE else 'Production'}")
     logger.info(f"Backend running on {settings.BACKEND_HOST}:{settings.BACKEND_PORT}")
     yield
-    # Shutdown
     logger.info("Shutting down application...")
 
 
-# Create FastAPI app
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
@@ -40,17 +35,16 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS - MORE PERMISSIVE
+# FIX #9: Use settings.ALLOWED_ORIGINS â€” no longer bypassed with ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
     expose_headers=["*"]
 )
 
-# Include API routes
 app.include_router(
     endpoints.router,
     prefix="/api",
@@ -60,31 +54,30 @@ app.include_router(
 
 @app.get("/")
 async def root():
-    """Root endpoint - redirect to docs"""
     return RedirectResponse(url="/docs")
 
 
 @app.get("/api")
 async def api_root():
-    """API root endpoint"""
     return {
         "message": "Confidence Scoring Framework API",
         "version": settings.APP_VERSION,
         "status": "running",
         "docs": "/docs",
         "endpoints": {
-            "query": "/api/query",
+            "query":  "/api/query",
             "upload": "/api/upload",
             "status": "/api/status",
             "health": "/api/health"
         }
     }
 
+
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host=settings.BACKEND_HOST,
         port=settings.BACKEND_PORT,
-        reload=False,  # <-- FORCE THIS TO FALSE
+        reload=False,
         log_level=settings.LOG_LEVEL.lower()
     )

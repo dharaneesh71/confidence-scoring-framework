@@ -16,6 +16,9 @@ import Sidebar from './components/Sidebar';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import './App.css';
 
+// FIX #18: single source of truth for backend URL
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
 const PrivateRoute = ({ children, adminOnly = false }) => {
   const { user } = useAuth();
   if (!user) return <Navigate to="/login" />;
@@ -46,7 +49,7 @@ function AppContent() {
 
   useEffect(() => {
     if (user && !isLoginPage) {
-      fetch('http://localhost:8000/api/history', {
+      fetch(`${API_BASE}/api/history`, {
         headers: { Authorization: `Bearer ${user.token}` }
       })
       .then(res => res.json())
@@ -64,10 +67,10 @@ function AppContent() {
 
       {/*
         ROOT SHELL
-        ──────────
-        • height: 100vh  → fills the viewport exactly
-        • overflow: hidden → no body-level scrollbar ever appears
-        • flexDirection: column → navbar on top, content below
+        â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        â€¢ height: 100vh  â†’ fills the viewport exactly
+        â€¢ overflow: hidden â†’ no body-level scrollbar ever appears
+        â€¢ flexDirection: column â†’ navbar on top, content below
       */}
       <Box
         className={`App ${mode === 'dark' ? 'theme-dark' : 'theme-light'}`}
@@ -78,7 +81,7 @@ function AppContent() {
           overflow: 'hidden',
         }}
       >
-        {/* ── SIDEBAR (drawer, rendered outside flow) ── */}
+        {/* â”€â”€ SIDEBAR (drawer, rendered outside flow) â”€â”€ */}
         {!isLoginPage && user && (
           <Sidebar
             sessions={sessions}
@@ -87,7 +90,7 @@ function AppContent() {
           />
         )}
 
-        {/* ── NAVBAR (position="fixed" so it always stays on top) ── */}
+        {/* â”€â”€ NAVBAR (position="fixed" so it always stays on top) â”€â”€ */}
         {!isLoginPage && (
           <AppBar
             position="fixed"
@@ -190,19 +193,19 @@ function AppContent() {
 
         {/*
           CONTENT AREA
-          ────────────
-          • Toolbar spacer pushes content below the fixed AppBar
-          • flex: 1 + min-height: 0  → THE KEY FIX.
+          â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+          â€¢ Toolbar spacer pushes content below the fixed AppBar
+          â€¢ flex: 1 + min-height: 0  â†’ THE KEY FIX.
             Without min-height:0, a flex child ignores its parent's
             height constraint and overflows, causing overlap with the navbar.
-          • overflow: hidden → each page manages its own scrolling
+          â€¢ overflow: hidden â†’ each page manages its own scrolling
         */}
         <Box
           sx={{
             display: 'flex',
             flexDirection: 'column',
             flex: 1,
-            minHeight: 0,          // ← critical: lets flex child shrink below content size
+            minHeight: 0,          // â† critical: lets flex child shrink below content size
             overflow: 'hidden',
             ...(isLoginPage ? {} : { mt: '64px' }), // offset for fixed AppBar (Toolbar default height)
           }}

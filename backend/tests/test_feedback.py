@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from main import app
-from core.database import Base, get_db, User, ChatHistory, Feedback
+from core.database import Base, get_db, User, ChatHistory, Feedback, Session as ChatSession
 from core.security import get_current_user # <--- We will override this!
 
 # --- SETUP IN-MEMORY DATABASE ---
@@ -57,12 +57,22 @@ def fixture_test_user(db_session):
     # Cleanup override after test
     del app.dependency_overrides[get_current_user]
 
+@pytest.fixture(name="test_session")
+def fixture_test_session(db_session, test_user):
+    """FIX #21: Creates a parent ChatSession so ChatHistory has a valid session_id."""
+    session = ChatSession(user_id=test_user.id, title="Test Session")
+    db_session.add(session)
+    db_session.commit()
+    db_session.refresh(session)
+    return session
+
 # --- TESTS ---
 
-def test_submit_feedback(db_session, test_user):
+def test_submit_feedback(db_session, test_user, test_session):  # FIX #21: added test_session
     # 1. Create a dummy Chat History entry for this user
     chat_entry = ChatHistory(
         user_id=test_user.id,
+        session_id=test_session.id,   # FIX #21: was missing, caused orphan record
         question="Test Question",
         answer="Test Answer",
         confidence_score=0.9
