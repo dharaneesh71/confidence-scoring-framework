@@ -67,6 +67,10 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
     }
   };
 
+  // THE FIX: Bulletproof reference array grabber
+  const references = msg.citations || msg.sources || msg.source_documents || [];
+  const hasReferences = !isGeneralKnowledge(msg) && references.length > 0;
+
   return (
     <Paper sx={{ ...cardStyle, mt: 2, mb: 4, textAlign: 'left', width: '100%', maxWidth: '100%' }}>
       
@@ -109,17 +113,22 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
         )}
       </Box>
       
-      {!isGeneralKnowledge(msg) && msg.citations && msg.citations.length > 0 && (
+      {/* THE FIX: Dynamically rendering whatever key the backend gave us */}
+      {hasReferences && (
         <Box sx={{ mt: 3 }}>
           <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 'bold', color: 'text.secondary' }}>SOURCE REFERENCES</Typography>
-          {msg.citations.map((cit, idx) => (
-            <Card key={idx} variant="outlined" sx={{ mb: 1.5, bgcolor: 'transparent' }}>
-              <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-                <Typography variant="body2" color="secondary" sx={{ fontWeight: 'bold' }}>{cit.source}</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, fontStyle: 'italic' }}>"{cit.excerpt}"</Typography>
-              </CardContent>
-            </Card>
-          ))}
+          {references.map((ref, idx) => {
+            const sourceName = ref.source || (ref.metadata && ref.metadata.source) || "Document";
+            const excerptText = ref.excerpt || ref.text || ref.page_content || ref.content || "";
+            return (
+              <Card key={idx} variant="outlined" sx={{ mb: 1.5, bgcolor: 'transparent' }}>
+                <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+                  <Typography variant="body2" color="secondary" sx={{ fontWeight: 'bold' }}>{sourceName}</Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, fontStyle: 'italic' }}>"{excerptText}"</Typography>
+                </CardContent>
+              </Card>
+            );
+          })}
         </Box>
       )}
 
@@ -181,8 +190,6 @@ const QAPage = ({ clearSelection }) => {
   const inputBarRef = useRef(null);
   const [inputBarHeight, setInputBarHeight] = useState(120);
 
-  // Ref attached to the LAST question bubble so we can scroll it into view
-  // cleanly below the navbar when a new message is sent.
   const lastQuestionRef = useRef(null);
   const chatEndRef = useRef(null);
 
@@ -206,13 +213,8 @@ const QAPage = ({ clearSelection }) => {
     return () => observer.disconnect();
   }, []);
 
-  // FIX: When loading starts (user just sent a message), scroll the question
-  // bubble into view with block:'nearest' so it sits just below the navbar
-  // instead of being buried behind it. When loading ends, scroll to the bottom
-  // so the full answer is visible.
   useEffect(() => {
     if (loading) {
-      // Small delay lets React paint the optimistic message first
       setTimeout(() => {
         lastQuestionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }, 50);
@@ -308,8 +310,6 @@ const QAPage = ({ clearSelection }) => {
           position: 'absolute',
           top: 0, left: 0, right: 0, bottom: 0,
           overflowY: 'auto',
-          // FIX: generous top padding so the first message is never
-          // clipped behind the navbar regardless of App.js mt offset.
           pt: { xs: '20px', sm: '24px' },
           pb: `${inputBarHeight + 16}px`,
           px: { xs: 2, md: 4 },
@@ -354,9 +354,6 @@ const QAPage = ({ clearSelection }) => {
               <Box key={idx} sx={{ width: '100%', mb: 2 }}>
 
                 {msg.question && (
-                  // FIX: attach lastQuestionRef to the most recent question bubble.
-                  // When loading starts we scroll this into view — it lands just
-                  // below the navbar, never behind it.
                   <Box
                     ref={isLastMessage ? lastQuestionRef : null}
                     sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}
