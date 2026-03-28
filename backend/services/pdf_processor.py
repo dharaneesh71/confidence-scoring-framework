@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import List, Dict, Tuple
 import re
 import logging
+import gc  # Added for memory management
 
 logger = logging.getLogger(__name__)
-
 
 class PDFProcessor:
     """Handles PDF text extraction and chunking"""
@@ -72,7 +72,7 @@ class PDFProcessor:
     
     def _clean_text(self, text: str) -> str:
         """Clean extracted text"""
-        # Remove excessive whitespace
+        # Remove excessive whitespace which can mess up chunking math
         text = re.sub(r'\s+', ' ', text)
         # Remove special characters that might interfere
         text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]', '', text)
@@ -95,22 +95,26 @@ class PDFProcessor:
         chunks = []
         start = 0
         chunk_id = 0
+        text_length = len(text)
         
-        while start < len(text):
-            # Calculate end position
-            end = start + self.chunk_size
+        while start < text_length:
+            # Calculate provisional end position
+            end = min(start + self.chunk_size, text_length)
             
-            # If not at the end, try to break at a sentence or word boundary
-            if end < len(text):
-                # Try to find sentence boundary
-                sentence_end = text.rfind('.', start, end)
-                if sentence_end > start + self.chunk_size // 2:
+            # If not at the very end of the document, look for a clean break
+            if end < text_length:
+                # Try to find a sentence boundary in the second half of the chunk
+                sentence_end = text.rfind('.', start + self.chunk_size // 2, end)
+                if sentence_end != -1:
                     end = sentence_end + 1
                 else:
                     # Fall back to word boundary
                     space_pos = text.rfind(' ', start, end)
-                    if space_pos > start:
+                    
+                    # CRITICAL FIX: Ensure picking this space doesn't cause a negative overlap loop
+                    if space_pos > start + self.chunk_overlap:
                         end = space_pos
+                    # If the space is too close to the start, ignore it and just hard-break at chunk_size
             
             chunk_text = text[start:end].strip()
             
@@ -128,10 +132,17 @@ class PDFProcessor:
                 chunks.append(chunk_dict)
                 chunk_id += 1
             
-            # Move start position with overlap
-            start = end - self.chunk_overlap
+            # CRITICAL FIX: Prevent the infinite loop OOM crash
+            next_start = end - self.chunk_overlap
+            
+            # If the calculated next start is somehow less than or equal to our current start,
+            # we force it to move forward to the end of the current chunk so it doesn't get stuck.
+            if next_start <= start:
+                start = end
+            else:
+                start = next_start
         
-        logger.info(f"Created {len(chunks)} chunks from text of length {len(text)}")
+        logger.info(f"Created {len(chunks)} chunks from text of length {text_length}")
         return chunks
     
     def process_pdf(self, pdf_path: str, document_id: str = None) -> List[Dict]:
@@ -167,5 +178,10 @@ class PDFProcessor:
         for chunk in chunks:
             estimated_page = int(chunk["start_char"] / chars_per_page) + 1
             chunk["page"] = min(estimated_page, len(page_texts))
+            
+        # MEMORY OPTIMIZATION: Manually free up RAM used by the massive text strings
+        del full_text
+        del page_texts
+        gc.collect()
         
         return chunks
