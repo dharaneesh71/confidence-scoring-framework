@@ -5,7 +5,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 import torch
 from typing import Optional
 import logging
-from core.config import settings
+from core.config import settings          # ← FIX: lowercase 'settings' not 'Settings'
+from huggingface_hub import login
 
 logger = logging.getLogger(__name__)
 
@@ -14,15 +15,21 @@ class LlamaService:
     """Manages Llama model for detailed, professional answer generation"""
 
     def __init__(self):
-        self.model = None
+        self.model     = None
         self.tokenizer = None
-        self.pipeline = None
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.pipeline  = None
+        self.device    = "cuda" if torch.cuda.is_available() else "cpu"
         self._initialize()
 
     def _initialize(self):
         try:
-            # FIX #8: use settings.LLAMA_MODEL_NAME â€” no longer hardcoded
+            if not settings.HUGGINGFACE_TOKEN:
+                logger.error("HUGGINGFACE_TOKEN is missing from .env — cannot load model")
+                return
+
+            login(token=settings.HUGGINGFACE_TOKEN)
+            logger.info("HuggingFace login successful")
+
             model_name = settings.LLAMA_MODEL_NAME
             logger.info(f"Loading Llama model: {model_name}")
 
@@ -31,7 +38,6 @@ class LlamaService:
                 token=settings.HUGGINGFACE_TOKEN
             )
 
-            # FIX #16: guard against missing pad_token_id (common in Llama tokenizers)
             if self.tokenizer.pad_token_id is None:
                 self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
@@ -52,8 +58,8 @@ class LlamaService:
             logger.info("Llama model loaded successfully")
 
         except Exception as e:
-            logger.error(f"Failed to initialize Llama model: {e}")
-            self.model = None
+            logger.error(f"Failed to initialize Llama model: {e}", exc_info=True)
+            self.model    = None
             self.pipeline = None
 
     def generate_answer(self, question: str, context: Optional[str] = None) -> str:
@@ -107,5 +113,4 @@ class LlamaService:
             return "Error generating answer."
 
     def is_ready(self) -> bool:
-        # FIX #4: was unconditionally "return True" â€” now checks actual model state
         return self.model is not None and self.pipeline is not None
