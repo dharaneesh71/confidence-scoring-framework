@@ -51,43 +51,61 @@ class ChromaService:
             logger.error(f"Failed to initialize ChromaDB: {e}")
             raise
     
-    def add_documents(self, chunks: List[Dict]) -> int:
-        """Add document chunks to the vector database"""
+    def add_documents(self, chunks: List[Dict], db_batch_size: int = 250) -> int:
+        """Add document chunks to the vector database in safe batches to prevent OOM crashes"""
         if not chunks:
             return 0
         
+        import gc # Import garbage collector for memory management
+        
         try:
-            texts = [chunk["text"] for chunk in chunks]
-            # Create unique IDs for chunks: filename_chunkIndex
-            ids = [f"{chunk.get('document_id', 'doc')}_{chunk['chunk_id']}" for chunk in chunks]
+            total_added = 0
+            total_chunks = len(chunks)
+            logger.info(f"Starting vector ingestion for {total_chunks} chunks...")
             
-            metadatas = []
-            for chunk in chunks:
-                metadata = {
-                    "source": str(chunk.get("source", "unknown")),
-                    "document_id": str(chunk.get("document_id", "unknown")),
-                    "chunk_id": int(chunk.get("chunk_id", 0)),
-                    "page": int(chunk.get("page", 0)),
-                }
-                metadatas.append(metadata)
-            
-            logger.info(f"Generating embeddings for {len(texts)} chunks...")
-            embeddings = self.embedding_model.encode(texts, show_progress_bar=False)
-            
-            self.collection.add(
-                embeddings=embeddings.tolist(),
-                documents=texts,
-                metadatas=metadatas,
-                ids=ids
-            )
-            
-            logger.info(f"Successfully added {len(chunks)} chunks to ChromaDB")
-            return len(chunks)
+            # Slice the massive list of chunks into smaller, manageable batches
+            for i in range(0, total_chunks, db_batch_size):
+                batch_chunks = chunks[i:i + db_batch_size]
+                
+                texts = [chunk["text"] for chunk in batch_chunks]
+                ids = [f"{chunk.get('document_id', 'doc')}_{chunk['chunk_id']}" for chunk in batch_chunks]
+                
+                metadatas = []
+                for chunk in batch_chunks:
+                    metadata = {
+                        "source": str(chunk.get("source", "unknown")),
+                        "document_id": str(chunk.get("document_id", "unknown")),
+                        "chunk_id": int(chunk.get("chunk_id", 0)),
+                        "page": int(chunk.get("page", 0)),
+                    }
+                    metadatas.append(metadata)
+                
+                logger.info(f"Generating embeddings for batch {i//db_batch_size + 1} ({len(texts)} chunks)...")
+                
+                # batch_size=32 tells PyTorch to only process 32 sentences simultaneously
+                embeddings = self.embedding_model.encode(texts, batch_size=32, show_progress_bar=False)
+                
+                self.collection.add(
+                    embeddings=embeddings.tolist(),
+                    documents=texts,
+                    metadatas=metadatas,
+                    ids=ids
+                )
+                
+                total_added += len(batch_chunks)
+                
+                # CRITICAL: Force Python to dump the RAM used by this batch before moving to the next
+                del embeddings
+                del texts
+                gc.collect()
+                
+            logger.info(f"Successfully added {total_added} chunks to ChromaDB")
+            return total_added
             
         except Exception as e:
             logger.error(f"Error adding documents to ChromaDB: {e}")
             raise
-
+        
     # --- NEW METHOD: DELETE DOCUMENT ---
     def delete_document(self, filename: str) -> bool:
         """
