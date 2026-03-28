@@ -8,7 +8,7 @@ import {
   useTheme, Divider, Rating, Collapse
 } from '@mui/material';
 import { 
-  Send, Lightbulb, CheckCircle, Public, Person
+  Send, Lightbulb, CheckCircle, Public, Person, Warning  // ← TASK 12: added Warning
 } from '@mui/icons-material';
 import { useAuth } from '../context/AuthContext';
 import '../styles/QAPage.css';
@@ -17,6 +17,7 @@ import '../styles/QAPage.css';
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 const isGeneralKnowledge = (res) => res && res.confidence_score <= 0.05;
+const isLowConfidence    = (res) => res && res.confidence_score > 0.05 && res.confidence_score < 0.5;  // ← TASK 12
 
 // --- 1. SUB-COMPONENT: AI MESSAGE BUBBLE ---
 const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
@@ -25,6 +26,8 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
   const [feedbackSent, setFeedbackSent] = useState(false);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [feedbackError, setFeedbackError] = useState(null);
+
+  const flagged = isLowConfidence(msg);  // ← TASK 12
 
   const getConfidenceColor = (score) => {
     if (score >= 0.75) return 'success';
@@ -75,8 +78,35 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
   const hasReferences = !isGeneralKnowledge(msg) && references.length > 0;
 
   return (
-    <Paper sx={{ ...cardStyle, mt: 2, mb: 4, textAlign: 'left', width: '100%', maxWidth: '100%' }}>
-      
+    // TASK 12B: red border when flagged
+    <Paper sx={{
+      ...cardStyle,
+      mt: 2, mb: 4,
+      textAlign: 'left',
+      width: '100%', maxWidth: '100%',
+      border: flagged
+        ? `2px solid ${theme.palette.error.main}`
+        : undefined,
+    }}>
+
+      {/* TASK 12B: ⚠️ WARNING BANNER — only shown for low confidence answers */}
+      {flagged && (
+        <Box sx={{
+          display: 'flex', alignItems: 'center', gap: 1.5,
+          px: 3, py: 1.5,
+          bgcolor: theme.palette.mode === 'dark'
+            ? 'rgba(211,47,47,0.15)'
+            : 'rgba(211,47,47,0.08)',
+          borderBottom: `1px solid ${theme.palette.error.main}`,
+          borderRadius: '14px 14px 0 0',
+        }}>
+          <Warning sx={{ color: 'error.main', fontSize: 20 }} />
+          <Typography variant="body2" sx={{ color: 'error.main', fontWeight: 'bold' }}>
+            LOW CONFIDENCE — This answer may be unreliable. Please verify with official sources.
+          </Typography>
+        </Box>
+      )}
+
       {/* ── ANSWER TEXT ── */}
       <Box sx={{ mb: 3 }}>
         <Typography variant="h6" color="secondary" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>

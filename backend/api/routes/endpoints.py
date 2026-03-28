@@ -334,6 +334,31 @@ def get_admin_feedback_logs(current_user: User = Depends(get_current_active_admi
         })
     return formatted_feedback
 
+@router.get("/admin/low-confidence")
+def get_low_confidence_sessions(
+    current_user: User = Depends(get_current_active_admin),
+    db: Session = Depends(get_db)
+):
+    """Returns all chat history entries with confidence score below 0.5"""
+    low_conf_entries = db.query(ChatHistory).filter(
+        ChatHistory.confidence_score < 0.5,
+        ChatHistory.confidence_score > 0.05   # exclude general knowledge (score=0)
+    ).order_by(ChatHistory.timestamp.desc()).limit(100).all()
+
+    results = []
+    for entry in low_conf_entries:
+        user_email = "Unknown User"
+        if entry.user:
+            user_email = entry.user.email
+        results.append({
+            "history_id":       entry.id,
+            "user_email":       user_email,
+            "question":         entry.question,
+            "answer":           entry.answer[:200] + "..." if len(entry.answer or "") > 200 else entry.answer,
+            "confidence_score": entry.confidence_score,
+            "timestamp":        entry.timestamp,
+        })
+    return results
 
 # ==========================================
 # 4. SYSTEM ROUTES
