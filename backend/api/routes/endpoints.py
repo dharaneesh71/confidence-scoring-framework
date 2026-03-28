@@ -193,7 +193,11 @@ def get_my_sessions(current_user: User = Depends(get_current_user), db: Session 
     return sessions
 
 @router.get("/session/{session_id}")
-def get_session_details(session_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_session_details(
+    session_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     session = db.query(ChatSession).filter(
         ChatSession.id == session_id,
         ChatSession.user_id == current_user.id
@@ -202,15 +206,35 @@ def get_session_details(session_id: int, current_user: User = Depends(get_curren
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
         
-    messages = db.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.timestamp.asc()).all()
+    messages = db.query(ChatHistory).filter(
+        ChatHistory.session_id == session_id
+    ).order_by(ChatHistory.timestamp.asc()).all()
+
+    # FIX: Manually serialize each message so the frontend receives
+    # `history_id` (mapped from the ORM's `id` field).
+    # Previously this returned raw ORM objects where the field is `id`,
+    # so msg.history_id was always undefined on the frontend — breaking feedback.
+    serialized_messages = [
+        {
+            "history_id":       msg.id,            # ← THE FIX: expose id as history_id
+            "question":         msg.question,
+            "answer":           msg.answer,
+            "confidence_score": msg.confidence_score,
+            "timestamp":        msg.timestamp,
+            # Include any extra fields your frontend uses:
+            "explanation":      getattr(msg, "explanation", None),
+            "citations":        getattr(msg, "citations", []) or [],
+        }
+        for msg in messages
+    ]
     
     return {
         "session_id": session.id,
-        "title": session.title,
-        "messages": messages
+        "title":      session.title,
+        "messages":   serialized_messages,
     }
 
-# --- NEW SPRINT 3 ANALYTICS ENDPOINT ---
+# --- SPRINT 3 ANALYTICS ENDPOINT ---
 @router.get("/session/{session_id}/analytics")
 def get_session_analytics(
     session_id: int, 
@@ -233,11 +257,11 @@ def get_session_analytics(
     avg_score = sum(scores) / len(scores) if scores else 0
     
     return {
-        "session_id": session_id,
-        "average_confidence": round(avg_score, 2),
-        "total_interactions": len(messages),
-        "trend": [{"turn": i+1, "score": round(s * 100, 1)} for i, s in enumerate(scores)],
-        "messages": messages
+        "session_id":           session_id,
+        "average_confidence":   round(avg_score, 2),
+        "total_interactions":   len(messages),
+        "trend":                [{"turn": i+1, "score": round(s * 100, 1)} for i, s in enumerate(scores)],
+        "messages":             messages
     }
 
 # ==========================================
@@ -308,8 +332,8 @@ def get_analytics(
 
     return {
         "average_rating": round(avg_rating, 1),
-        "total_feedback": db.query(Feedback).count(),
-        "distribution": distribution
+        "total_feedback":  db.query(Feedback).count(),
+        "distribution":    distribution
     }
 
 @router.get("/admin/documents")
@@ -349,10 +373,10 @@ def get_admin_feedback_logs(
             user_email = fb.chat_history.user.email
             
         formatted_feedback.append({
-            "timestamp": fb.created_at,
+            "timestamp":  fb.created_at,
             "user_email": user_email,
-            "rating": fb.rating,
-            "comment": fb.comment
+            "rating":     fb.rating,
+            "comment":    fb.comment
         })
         
     return formatted_feedback
@@ -364,7 +388,7 @@ def get_admin_feedback_logs(
 @router.get("/status", response_model=StatusResponse)
 async def get_status():
     try:
-        kb_ready = chroma_service.is_ready()
+        kb_ready  = chroma_service.is_ready()
         llm_ready = llama_service.is_ready()
         doc_count = chroma_service.get_count()
         

@@ -20,6 +20,8 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState('');
   const [feedbackSent, setFeedbackSent] = useState(false);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackError, setFeedbackError] = useState(null);
 
   const getConfidenceColor = (score) => {
     if (score >= 0.75) return 'success';
@@ -34,9 +36,14 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
   };
 
   const submitFeedback = async () => {
-    if (!msg.history_id) return;
+    if (!msg.history_id) {
+      setFeedbackError('Cannot submit feedback: history_id is missing from the API response.');
+      return;
+    }
+    setFeedbackLoading(true);
+    setFeedbackError(null);
     try {
-      await fetch('http://localhost:8000/api/feedback', {
+      const response = await fetch('http://localhost:8000/api/feedback', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -44,20 +51,25 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
         },
         body: JSON.stringify({
           history_id: msg.history_id,
-          rating: rating,
-          comment: comment
+          rating,
+          comment
         }),
       });
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server error: ${response.status}`);
+      }
       setFeedbackSent(true);
     } catch (err) {
-      console.error("Feedback failed", err);
+      setFeedbackError(err.message || 'Failed to submit feedback. Please try again.');
+    } finally {
+      setFeedbackLoading(false);
     }
   };
 
   return (
     <Paper sx={{ ...cardStyle, mt: 2, mb: 4, textAlign: 'left', width: '100%', maxWidth: '100%' }}>
       
-      {/* ANSWER SECTION */}
       <Box sx={{ mb: 3 }}>
         <Typography variant="h6" color="secondary" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Lightbulb fontSize="small" /> Answer:
@@ -69,53 +81,50 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
 
       <Divider sx={{ my: 3 }} />
       
-      {/* VERIFICATION & CONFIDENCE SECTION */}
       <Box sx={{ my: 3, p: 3, border: `1px solid ${theme.palette.divider}`, borderRadius: '16px', bgcolor: theme.palette.mode === 'dark' ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.02)' }}>
         {isGeneralKnowledge(msg) ? (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                <Public sx={{ fontSize: 36, color: 'info.main' }} />
-                <Box>
-                    <Typography variant="h6" sx={{ fontWeight: 'bold', color: 'info.main' }}>General Knowledge Response</Typography>
-                    <Typography variant="body2" color="text.secondary">Answer not found in Ground Truth documents.</Typography>
-                </Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Public sx={{ fontSize: 36, color: 'info.main' }} />
+            <Box>
+              <Typography variant="h6" sx={{ fontWeight: 'bold', color: 'info.main' }}>General Knowledge Response</Typography>
+              <Typography variant="body2" color="text.secondary">Answer not found in Ground Truth documents.</Typography>
             </Box>
+          </Box>
         ) : (
-            <>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <CheckCircle fontSize="medium" color="success" />
-                      <Typography variant="h6" sx={{ fontWeight: 'bold' }}>Verified from Documents</Typography>
-                  </Box>
-                  <Chip label={`${getConfidenceLabel(msg.confidence_score)} CONFIDENCE`} color={getConfidenceColor(msg.confidence_score)} sx={{ fontWeight: 'bold' }} />
+          <>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <CheckCircle fontSize="medium" color="success" />
+                <Typography variant="h6" sx={{ fontWeight: 'bold' }}>Verified from Documents</Typography>
               </Box>
-              <LinearProgress variant="determinate" value={msg.confidence_score * 100} color={getConfidenceColor(msg.confidence_score)} sx={{ height: 10, borderRadius: 5, mb: 2 }} />
-              {msg.explanation && (
-                <Box sx={{ p: 2, bgcolor: theme.palette.action.hover, borderRadius: '8px' }}>
-                  <Typography variant="body2" color="text.secondary"><strong>Evaluation Details:</strong> {msg.explanation}</Typography>
-                </Box>
-              )}
-            </>
+              <Chip label={`${getConfidenceLabel(msg.confidence_score)} CONFIDENCE`} color={getConfidenceColor(msg.confidence_score)} sx={{ fontWeight: 'bold' }} />
+            </Box>
+            <LinearProgress variant="determinate" value={msg.confidence_score * 100} color={getConfidenceColor(msg.confidence_score)} sx={{ height: 10, borderRadius: 5, mb: 2 }} />
+            {msg.explanation && (
+              <Box sx={{ p: 2, bgcolor: theme.palette.action.hover, borderRadius: '8px' }}>
+                <Typography variant="body2" color="text.secondary"><strong>Evaluation Details:</strong> {msg.explanation}</Typography>
+              </Box>
+            )}
+          </>
         )}
       </Box>
       
-      {/* CITATIONS SECTION */}
       {!isGeneralKnowledge(msg) && msg.citations && msg.citations.length > 0 && (
-          <Box sx={{ mt: 3 }}>
-            <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 'bold', color: 'text.secondary' }}>SOURCE REFERENCES</Typography>
-            {msg.citations.map((cit, idx) => (
-                <Card key={idx} variant="outlined" sx={{ mb: 1.5, bgcolor: 'transparent' }}>
-                    <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-                        <Typography variant="body2" color="secondary" sx={{ fontWeight: 'bold' }}>{cit.source}</Typography>
-                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, fontStyle: 'italic' }}>"{cit.excerpt}"</Typography>
-                    </CardContent>
-                </Card>
-            ))}
-          </Box>
+        <Box sx={{ mt: 3 }}>
+          <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 'bold', color: 'text.secondary' }}>SOURCE REFERENCES</Typography>
+          {msg.citations.map((cit, idx) => (
+            <Card key={idx} variant="outlined" sx={{ mb: 1.5, bgcolor: 'transparent' }}>
+              <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+                <Typography variant="body2" color="secondary" sx={{ fontWeight: 'bold' }}>{cit.source}</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, fontStyle: 'italic' }}>"{cit.excerpt}"</Typography>
+              </CardContent>
+            </Card>
+          ))}
+        </Box>
       )}
 
       <Divider sx={{ my: 4 }} />
 
-      {/* FEEDBACK SECTION */}
       <Box sx={{ textAlign: 'center' }}>
         {!feedbackSent ? (
           <>
@@ -123,24 +132,28 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
             <Rating
               value={rating}
               size="large"
-              onChange={(event, newValue) => setRating(newValue)}
+              onChange={(event, newValue) => {
+                setRating(newValue);
+                setFeedbackError(null);
+              }}
             />
-            
             <Collapse in={rating > 0 && rating < 5}>
               <TextField
-                fullWidth
-                multiline
-                rows={2}
+                fullWidth multiline rows={2}
                 placeholder="What was missing? (Optional)"
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 sx={{ mt: 2 }}
               />
             </Collapse>
-
+            {feedbackError && (
+              <Alert severity="error" sx={{ mt: 2, borderRadius: '8px', textAlign: 'left' }}>
+                {feedbackError}
+              </Alert>
+            )}
             {rating > 0 && (
-              <Button onClick={submitFeedback} variant="outlined" sx={{ mt: 2 }}>
-                Submit Feedback
+              <Button onClick={submitFeedback} variant="outlined" disabled={feedbackLoading} sx={{ mt: 2, minWidth: '160px' }}>
+                {feedbackLoading ? <CircularProgress size={20} /> : 'Submit Feedback'}
               </Button>
             )}
           </>
@@ -148,7 +161,6 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
           <Alert severity="success" sx={{ justifyContent: 'center' }}>Thanks for your feedback!</Alert>
         )}
       </Box>
-
     </Paper>
   );
 };
@@ -157,25 +169,25 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
 const QAPage = ({ clearSelection }) => {
   const { sessionId } = useParams(); 
   const navigate = useNavigate();
-
   const theme = useTheme();
   const { user } = useAuth();
   
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
 
-  // Measure the fixed bottom bar height so we can pad the chat area correctly
   const inputBarRef = useRef(null);
   const [inputBarHeight, setInputBarHeight] = useState(120);
-  
+
+  // Ref attached to the LAST question bubble so we can scroll it into view
+  // cleanly below the navbar when a new message is sent.
+  const lastQuestionRef = useRef(null);
   const chatEndRef = useRef(null);
 
   const cardStyle = {
-    p: 4, 
+    p: 4,
     borderRadius: '16px',
     background: theme.palette.mode === 'dark' ? 'rgba(30, 41, 59, 0.8)' : '#ffffff',
     boxShadow: theme.palette.mode === 'dark' ? '0 8px 32px rgba(0,0,0,0.3)' : '0 8px 32px rgba(0,0,0,0.05)',
@@ -183,26 +195,31 @@ const QAPage = ({ clearSelection }) => {
 
   const chartData = messages
     .filter(m => m.confidence_score !== undefined && m.confidence_score !== null)
-    .map((m, index) => ({
-      turn: index + 1,
-      score: Math.round(m.confidence_score * 100)
-    }));
+    .map((m, index) => ({ turn: index + 1, score: Math.round(m.confidence_score * 100) }));
 
-  // Keep inputBarHeight in sync whenever the textarea grows/shrinks
   useEffect(() => {
     if (!inputBarRef.current) return;
     const observer = new ResizeObserver(() => {
-      if (inputBarRef.current) {
-        setInputBarHeight(inputBarRef.current.offsetHeight);
-      }
+      if (inputBarRef.current) setInputBarHeight(inputBarRef.current.offsetHeight);
     });
     observer.observe(inputBarRef.current);
     return () => observer.disconnect();
   }, []);
 
+  // FIX: When loading starts (user just sent a message), scroll the question
+  // bubble into view with block:'nearest' so it sits just below the navbar
+  // instead of being buried behind it. When loading ends, scroll to the bottom
+  // so the full answer is visible.
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+    if (loading) {
+      // Small delay lets React paint the optimistic message first
+      setTimeout(() => {
+        lastQuestionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 50);
+    } else {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [loading, messages]);
 
   useEffect(() => {
     if (sessionId) {
@@ -222,7 +239,6 @@ const QAPage = ({ clearSelection }) => {
       });
       if (!response.ok) throw new Error("Session not found");
       const data = await response.json();
-      
       setCurrentSessionId(data.session_id);
       setMessages(data.messages || []);
     } catch (err) {
@@ -238,7 +254,7 @@ const QAPage = ({ clearSelection }) => {
     setQuestion('');
     setError(null);
     navigate('/chat');
-    if(clearSelection) clearSelection();
+    if (clearSelection) clearSelection();
   };
 
   const handleSubmit = async (e) => {
@@ -250,7 +266,7 @@ const QAPage = ({ clearSelection }) => {
     setError(null);
 
     setMessages(prev => [...prev, { question: userQuestion, is_optimistic: true }]);
-    setLoading(true); 
+    setLoading(true);
 
     try {
       const response = await fetch('http://localhost:8000/api/query', {
@@ -259,10 +275,7 @@ const QAPage = ({ clearSelection }) => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${user.token}`
         },
-        body: JSON.stringify({ 
-          question: userQuestion,
-          session_id: currentSessionId 
-        }),
+        body: JSON.stringify({ question: userQuestion, session_id: currentSessionId }),
       });
 
       if (!response.ok) throw new Error("Failed to get answer");
@@ -287,27 +300,24 @@ const QAPage = ({ clearSelection }) => {
   };
   
   return (
-    // Outer wrapper: fill the available viewport height
     <Box sx={{ position: 'relative', height: '100%', width: '100%', overflow: 'hidden' }}>
 
-      {/* ── 1. SCROLLABLE CHAT AREA ── */}
+      {/* ── SCROLLABLE CHAT AREA ── */}
       <Box
         sx={{
           position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          // Leave room at the top for the Navbar and at the bottom for the fixed input bar
-          bottom: 0,
+          top: 0, left: 0, right: 0, bottom: 0,
           overflowY: 'auto',
-          pt: { xs: 10, sm: 12 },          // clears the Navbar
-          pb: `${inputBarHeight + 16}px`,   // clears the fixed input bar + small gap
+          // FIX: generous top padding so the first message is never
+          // clipped behind the navbar regardless of App.js mt offset.
+          pt: { xs: '20px', sm: '24px' },
+          pb: `${inputBarHeight + 16}px`,
           px: { xs: 2, md: 4 },
         }}
       >
         <Box sx={{ width: '100%', maxWidth: '900px', margin: '0 auto', display: 'flex', flexDirection: 'column' }}>
 
-          {/* TRUST SCORE MINI-GRAPH */}
+          {/* TRUST SCORE GRAPH */}
           {chartData.length > 1 && (
             <Paper sx={{ p: 2, mb: 4, bgcolor: 'rgba(0, 209, 255, 0.05)', border: '1px solid rgba(0, 209, 255, 0.2)', borderRadius: '12px' }}>
               <Typography variant="caption" sx={{ color: '#00d1ff', fontWeight: 'bold' }}>SESSION TRUST SCORE TREND (%)</Typography>
@@ -332,31 +342,45 @@ const QAPage = ({ clearSelection }) => {
           {/* EMPTY STATE */}
           {messages.length === 0 && !loading && (
             <Box sx={{ m: 'auto', textAlign: 'center', color: 'text.secondary', mt: 4 }}>
-                <Lightbulb sx={{ fontSize: 60, mb: 2, opacity: 0.5 }} />
-                <Typography variant="h6">How can I help you today?</Typography>
+              <Lightbulb sx={{ fontSize: 60, mb: 2, opacity: 0.5 }} />
+              <Typography variant="h6">How can I help you today?</Typography>
             </Box>
           )}
 
           {/* MESSAGES LOOP */}
-          {messages.map((msg, idx) => (
-            <Box key={idx} sx={{ width: '100%', mb: 2 }}>
-              
-              {msg.question && (
-                <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
-                  <Paper sx={{ p: 2, bgcolor: theme.palette.primary.main, color: 'white', borderRadius: '16px 16px 0 16px', maxWidth: '85%' }}>
-                    <Typography variant="body1" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        {msg.question} <Person fontSize="small" />
-                    </Typography>
-                  </Paper>
-                </Box>
-              )}
+          {messages.map((msg, idx) => {
+            const isLastMessage = idx === messages.length - 1;
+            return (
+              <Box key={idx} sx={{ width: '100%', mb: 2 }}>
 
-              {msg.answer && !msg.is_optimistic && (
-                 <AIMessageBubble msg={msg} user={user} theme={theme} cardStyle={cardStyle} />
-              )}
-              
-            </Box>
-          ))}
+                {msg.question && (
+                  // FIX: attach lastQuestionRef to the most recent question bubble.
+                  // When loading starts we scroll this into view — it lands just
+                  // below the navbar, never behind it.
+                  <Box
+                    ref={isLastMessage ? lastQuestionRef : null}
+                    sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}
+                  >
+                    <Paper sx={{
+                      p: 2,
+                      bgcolor: theme.palette.primary.main,
+                      color: 'white',
+                      borderRadius: '16px 16px 0 16px',
+                      maxWidth: '85%',
+                    }}>
+                      <Typography variant="body1" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        {msg.question} <Person fontSize="small" />
+                      </Typography>
+                    </Paper>
+                  </Box>
+                )}
+
+                {msg.answer && !msg.is_optimistic && (
+                  <AIMessageBubble msg={msg} user={user} theme={theme} cardStyle={cardStyle} />
+                )}
+              </Box>
+            );
+          })}
 
           {loading && (
             <Box sx={{ display: 'flex', justifyContent: 'flex-start', mb: 4 }}>
@@ -371,20 +395,16 @@ const QAPage = ({ clearSelection }) => {
         </Box>
       </Box>
 
-      {/* ── 2. FIXED BOTTOM INPUT BAR ── */}
+      {/* ── FIXED BOTTOM INPUT BAR ── */}
       <Box
         ref={inputBarRef}
         sx={{
           position: 'fixed',
-          bottom: 0,
-          // If you have a sidebar, set left to its width (e.g. '240px'). Otherwise 0.
-          left: 0,
-          right: 0,
-          zIndex: (theme) => theme.zIndex.appBar - 1,
+          bottom: 0, left: 0, right: 0,
+          zIndex: (t) => t.zIndex.appBar - 1,
           bgcolor: theme.palette.mode === 'dark' ? '#0f172a' : '#f5f5f5',
           borderTop: `1px solid ${theme.palette.divider}`,
-          pt: 2,
-          pb: 3,
+          pt: 2, pb: 3,
           display: 'flex',
           justifyContent: 'center',
         }}
@@ -436,7 +456,6 @@ const QAPage = ({ clearSelection }) => {
           </Typography>
         </Box>
       </Box>
-
     </Box>
   );
 };
