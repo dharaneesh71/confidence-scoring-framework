@@ -7,7 +7,7 @@ import {
 import { 
   AdminPanelSettings, Brightness4, Brightness7, 
   Logout, Settings, ChatBubbleOutline, Menu as MenuIcon 
-} from '@mui/icons-material'; // <-- MenuIcon is back!
+} from '@mui/icons-material';
 
 import QAPage from './pages/QAPage';
 import AdminPage from './pages/AdminPage';
@@ -58,9 +58,9 @@ function AppContent() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <div className={`App ${mode === 'dark' ? 'theme-dark' : 'theme-light'}`} style={{ display: 'flex', minHeight: '100vh', flexDirection: 'column' }}>
+      {/* FIX: Changed minHeight to height, added overflow hidden */}
+      <div className={`App ${mode === 'dark' ? 'theme-dark' : 'theme-light'}`} style={{ display: 'flex', height: '100vh', overflow: 'hidden', flexDirection: 'column' }}>
         
-        {/* Slide-out History Drawer */}
         {!isLoginPage && user && (
            <Sidebar 
              sessions={sessions} 
@@ -69,7 +69,6 @@ function AppContent() {
            />
         )}
 
-        {/* DYNAMIC TOP NAVBAR */}
         {!isLoginPage && (
           <AppBar 
             position="sticky" 
@@ -79,19 +78,14 @@ function AppContent() {
               zIndex: 1200, 
               bgcolor: `${navBg} !important`, 
               borderBottom: `1px solid ${mode === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'} !important`,
-              color: `${navColor} !important`
+              color: `${navColor} !important`,
+              flexShrink: 0 // FIX: Stops navbar from shrinking
             }}
           >
             <Toolbar sx={{ display: 'flex', justifyContent: 'space-between' }}>
-              
-              {/* LEFT SIDE: The "Three Dashes" History Button & Title */}
               <Box sx={{ display: 'flex', alignItems: 'center' }}> 
                 {user && (
-                  <IconButton 
-                    edge="start" 
-                    onClick={() => setSidebarOpen(true)} 
-                    sx={{ mr: 2, color: `${navColor} !important` }}
-                  >
+                  <IconButton edge="start" onClick={() => setSidebarOpen(true)} sx={{ mr: 2, color: `${navColor} !important` }}>
                     <MenuIcon />
                   </IconButton>
                 )}
@@ -100,7 +94,6 @@ function AppContent() {
                 </Typography>
               </Box>
 
-              {/* RIGHT SIDE: Controls */}
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                 <IconButton onClick={() => setMode(prev => prev === 'light' ? 'dark' : 'light')} sx={{ color: `${navColor} !important` }}>
                   {mode === 'dark' ? <Brightness7 /> : <Brightness4 />}
@@ -112,31 +105,17 @@ function AppContent() {
                       <Settings fontSize="small" />
                     </IconButton>
 
-                    <Button 
-                      component={Link} 
-                      to="/chat" 
-                      startIcon={<ChatBubbleOutline fontSize="small" />} 
-                      sx={{ color: `${navColor} !important`, fontWeight: 'bold', fontSize: '0.85rem', display: { xs: 'none', sm: 'inline-flex' } }}
-                    >
+                    <Button component={Link} to="/chat" startIcon={<ChatBubbleOutline fontSize="small" />} sx={{ color: `${navColor} !important`, fontWeight: 'bold', fontSize: '0.85rem', display: { xs: 'none', sm: 'inline-flex' } }}>
                       NEW CHAT
                     </Button>
 
                     {user.role === 'admin' && (
-                      <Button 
-                        component={Link} 
-                        to="/admin" 
-                        startIcon={<AdminPanelSettings fontSize="small" />} 
-                        sx={{ color: `${navColor} !important`, fontWeight: 'bold', fontSize: '0.85rem' }}
-                      >
+                      <Button component={Link} to="/admin" startIcon={<AdminPanelSettings fontSize="small" />} sx={{ color: `${navColor} !important`, fontWeight: 'bold', fontSize: '0.85rem' }}>
                         ADMIN
                       </Button>
                     )}
 
-                    <Button 
-                      onClick={logout} 
-                      startIcon={<Logout fontSize="small" />} 
-                      sx={{ color: `${navColor} !important`, fontWeight: 'bold', fontSize: '0.85rem' }}
-                    >
+                    <Button onClick={logout} startIcon={<Logout fontSize="small" />} sx={{ color: `${navColor} !important`, fontWeight: 'bold', fontSize: '0.85rem' }}>
                       LOGOUT
                     </Button>
                   </>
@@ -148,7 +127,8 @@ function AppContent() {
           </AppBar>
         )}
 
-        <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
+        {/* FIX: Ensure the routing container takes the rest of the height and hides overflow */}
+        <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/" element={<Navigate to="/chat" />} />
