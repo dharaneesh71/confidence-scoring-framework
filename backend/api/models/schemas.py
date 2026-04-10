@@ -46,15 +46,18 @@ class FeedbackResponse(BaseModel):
 
 class QueryRequest(BaseModel):
     """Request model for user question submission"""
-    question: str = Field(..., min_length=1, max_length=1000, description="User's question")
+    question:   str          = Field(..., min_length=1, max_length=1000, description="User's question")
     session_id: Optional[int] = Field(None, description="Optional ID of existing chat session")
-    
+    domain:     Optional[str] = Field(None, description="Domain to filter RAG search (e.g. 'Medical', 'Legal')")  # ← ADD THIS
+
     class Config:
         json_schema_extra = {
             "example": {
-                "question": "What is the confidence scoring framework?"
+                "question":  "What is the confidence scoring framework?",
+                "domain":    "General"   # ← ADD THIS to example too
             }
         }
+
 
 class SessionResponse(BaseModel):
     id: int

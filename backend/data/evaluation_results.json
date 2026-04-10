@@ -1,0 +1,39 @@
+{
+  "evaluated_at": "2026-04-09T09:51:43.934141",
+  "total_samples": 3,
+  "averages": {
+    "bleu": 0.9587,
+    "rouge1": 0.9781,
+    "rouge2": 0.978,
+    "rougeL": 0.9781
+  },
+  "per_sample": [
+    {
+      "question": "What are transformers?",
+      "type": "gold_standard",
+      "confidence": 0.94,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "What is Wordnet?",
+      "type": "gold_standard",
+      "confidence": 0.94,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "what is a RAG",
+      "type": "hard_negative",
+      "confidence": 0.4653,
+      "bleu": 0.8762,
+      "rouge1": 0.9342,
+      "rouge2": 0.9339,
+      "rougeL": 0.9342
+    }
+  ]
+}

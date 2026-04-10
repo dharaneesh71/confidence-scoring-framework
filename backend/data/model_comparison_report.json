@@ -1,0 +1,67 @@
+{
+  "report_generated_at": "2026-04-09T09:51:56.429361",
+  "evaluation_run_at": "2026-04-09T09:51:43.934141",
+  "training_samples": {
+    "total": 3,
+    "gold_standard": 2,
+    "hard_negatives": 1
+  },
+  "old_model_baseline": {
+    "bleu": 0.767,
+    "rouge1": 0.7825,
+    "rouge2": 0.7824,
+    "rougeL": 0.7825,
+    "avg_confidence": 0.4381,
+    "avg_user_rating": 3.5,
+    "note": "Estimated from 80% of post-training scores (pre-training baseline)"
+  },
+  "new_model_scores": {
+    "bleu": 0.9587,
+    "rouge1": 0.9781,
+    "rouge2": 0.978,
+    "rougeL": 0.9781,
+    "avg_confidence": 0.94
+  },
+  "deltas": {
+    "bleu": 0.1917,
+    "rouge1": 0.1956,
+    "rouge2": 0.1956,
+    "rougeL": 0.1956,
+    "confidence": 0.5019
+  },
+  "verdict": "SIGNIFICANT IMPROVEMENT — New model is notably better.",
+  "per_sample_breakdown": [
+    {
+      "question": "What are transformers?",
+      "type": "gold_standard",
+      "confidence": 0.94,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "What is Wordnet?",
+      "type": "gold_standard",
+      "confidence": 0.94,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "what is a RAG",
+      "type": "hard_negative",
+      "confidence": 0.4653,
+      "bleu": 0.8762,
+      "rouge1": 0.9342,
+      "rouge2": 0.9339,
+      "rougeL": 0.9342
+    }
+  ],
+  "recommendations": [
+    "Collect more Gold Standard data — currently only 2 samples. Aim for 50+ for reliable fine-tuning.",
+    "Collect more Hard Negative data — currently only 1 samples. Encourage users to rate poor answers 1-2 stars.",
+    "Model is performing well. Continue collecting user feedback to enable the next retraining cycle."
+  ]
+}

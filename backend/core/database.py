@@ -1,5 +1,5 @@
 from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime, Boolean, Text
-from sqlalchemy.orm import sessionmaker, relationship, declarative_base  # FIX #15: moved from ext.declarative
+from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 import datetime
 from pathlib import Path
 
@@ -45,8 +45,8 @@ class ChatHistory(Base):
     question = Column(String)
     answer = Column(String)
     confidence_score = Column(Float)
-    explanation = Column(Text, nullable=True)   # FIX #1: was missing
-    citations = Column(Text, nullable=True)     # FIX #1: was missing (stored as JSON string)
+    explanation = Column(Text, nullable=True)
+    citations = Column(Text, nullable=True)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
 
     user = relationship("User", back_populates="chat_history")
@@ -59,6 +59,7 @@ class Document(Base):
     filename = Column(String, unique=True, index=True)
     upload_date = Column(DateTime, default=datetime.datetime.utcnow)
     chunk_count = Column(Integer)
+    domain = Column(String, default="General", nullable=True)  
 
 class Feedback(Base):
     __tablename__ = "feedback"
@@ -70,7 +71,33 @@ class Feedback(Base):
 
     chat_history = relationship("ChatHistory", back_populates="feedback")
 
-# Create tables
+# --- AUTO-MIGRATE: add domain column if it doesn't exist (safe for existing DBs) ---
+def _migrate_add_domain_column():
+    """
+    SQLite doesn't support ALTER TABLE ADD COLUMN if it already exists.
+    This safely adds the domain column to an existing database without
+    wiping any data.
+    """
+    import sqlite3
+    db_path = DATA_DIR / "confid_ai.db"
+    if not db_path.exists():
+        return  # fresh DB — create_all handles it
+    
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    
+    # Check if column already exists
+    cursor.execute("PRAGMA table_info(documents)")
+    existing_columns = [row[1] for row in cursor.fetchall()]
+    
+    if "domain" not in existing_columns:
+        cursor.execute("ALTER TABLE documents ADD COLUMN domain VARCHAR DEFAULT 'General'")
+        conn.commit()
+        print("[DB Migration] ✅ Added 'domain' column to documents table.")
+    
+    conn.close()
+
+_migrate_add_domain_column() 
 Base.metadata.create_all(bind=engine)
 
 def get_db():

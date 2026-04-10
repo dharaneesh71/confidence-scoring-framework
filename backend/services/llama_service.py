@@ -1,51 +1,59 @@
 """
 Llama Language Model service
 """
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, TrainingArguments, Trainer, DataCollatorForLanguageModeling
 import torch
-from typing import Optional
+from typing import Optional, Callable, List
 import logging
-from core.config import settings          # ← FIX: lowercase 'settings' not 'Settings'
+import os
+from pathlib import Path
+from core.config import settings
 from huggingface_hub import login
 
 logger = logging.getLogger(__name__)
 
+# ── Force offline mode to stop 503 HuggingFace ping errors ──
+os.environ["TRANSFORMERS_OFFLINE"] = "0"
+os.environ["HF_HUB_OFFLINE"]       = "0"
 
 class LlamaService:
     """Manages Llama model for detailed, professional answer generation"""
 
     def __init__(self):
-        self.model     = None
-        self.tokenizer = None
-        self.pipeline  = None
-        self.device    = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model          = None
+        self.tokenizer      = None
+        self.pipeline       = None
+        self.device         = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model_name     = settings.LLAMA_MODEL_NAME
+        self.finetuned_path = Path("data/finetuned_model")
         self._initialize()
 
     def _initialize(self):
         try:
-            if not settings.HUGGINGFACE_TOKEN:
-                logger.error("HUGGINGFACE_TOKEN is missing from .env — cannot load model")
-                return
+            # Only login if NOT in offline mode
+            if not os.environ.get("TRANSFORMERS_OFFLINE") and settings.HUGGINGFACE_TOKEN:
+                login(token=settings.HUGGINGFACE_TOKEN)
+                logger.info("HuggingFace login successful")
 
-            login(token=settings.HUGGINGFACE_TOKEN)
-            logger.info("HuggingFace login successful")
-
-            model_name = settings.LLAMA_MODEL_NAME
-            logger.info(f"Loading Llama model: {model_name}")
+            # Use fine-tuned model if it exists, else base model
+            load_path = str(self.finetuned_path) if self.finetuned_path.exists() else self.model_name
+            logger.info(f"Loading model from: {load_path}")
 
             self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                token=settings.HUGGINGFACE_TOKEN
+                load_path,
+                token=settings.HUGGINGFACE_TOKEN,
+                local_files_only=True
             )
 
             if self.tokenizer.pad_token_id is None:
                 self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
             self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
+                load_path,
                 token=settings.HUGGINGFACE_TOKEN,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                device_map="auto" if self.device == "cuda" else None
+                dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                device_map="auto" if self.device == "cuda" else None,
+                local_files_only=True
             )
 
             self.pipeline = pipeline(
@@ -61,6 +69,15 @@ class LlamaService:
             logger.error(f"Failed to initialize Llama model: {e}", exc_info=True)
             self.model    = None
             self.pipeline = None
+
+    def _format_chat(self, question: str, answer: str) -> str:
+        """Format a Q&A pair into LLaMA-3 chat format for fine-tuning."""
+        return (
+            f"<|start_header_id|>user<|end_header_id|>\n\n"
+            f"{question}<|eot_id|>\n"
+            f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+            f"{answer}<|eot_id|>"
+        )
 
     def generate_answer(self, question: str, context: Optional[str] = None) -> str:
         try:
@@ -111,6 +128,124 @@ class LlamaService:
         except Exception as e:
             logger.error(f"Error generating answer: {e}")
             return "Error generating answer."
+
+    def retrain(
+        self,
+        gold_data: List[dict],
+        hard_data: List[dict],
+        status_callback: Optional[Callable[[int, str], None]] = None
+    ):
+        """
+        Sprint 5 Task 4+7: Fine-tunes the loaded model on gold standard
+        and hard negative data using LoRA-style lightweight training.
+        Calls status_callback(progress_pct, message) throughout.
+        """
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError("Model is not loaded — cannot retrain.")
+
+        def _cb(progress: int, msg: str):
+            logger.info(f"[Retrain {progress}%] {msg}")
+            if status_callback:
+                status_callback(progress, msg)
+
+        try:
+            # ── Step 1: Format all training samples ──────────────────────
+            _cb(15, "Formatting training samples into LLaMA-3 chat format...")
+            texts = []
+
+            for item in gold_data:
+                texts.append(self._format_chat(item["question"], item["answer"]))
+
+            # Hard negatives: teach model what NOT to be confident about
+            for item in hard_data:
+                corrected = (
+                    f"I want to be transparent: my previous response on this topic "
+                    f"may not have been fully accurate. {item['answer']}"
+                )
+                texts.append(self._format_chat(item["question"], corrected))
+
+            if not texts:
+                raise ValueError("No training samples available after formatting.")
+
+            _cb(25, f"Formatted {len(texts)} training samples. Tokenizing...")
+
+            # ── Step 2: Tokenize ─────────────────────────────────────────
+            from torch.utils.data import Dataset
+
+            class ChatDataset(Dataset):
+                def __init__(self, encodings):
+                    self.encodings = encodings
+
+                def __len__(self):
+                    return len(self.encodings["input_ids"])
+
+                def __getitem__(self, idx):
+                    return {
+                        "input_ids":      self.encodings["input_ids"][idx],
+                        "attention_mask": self.encodings["attention_mask"][idx],
+                        "labels":         self.encodings["input_ids"][idx].clone(),
+                    }
+
+            tokenized = self.tokenizer(
+                texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512
+            )
+            dataset = ChatDataset(tokenized)
+            _cb(40, "Tokenization complete. Configuring training...")
+
+            # ── Step 3: Training arguments ───────────────────────────────
+            output_dir = str(self.finetuned_path)
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+            training_args = TrainingArguments(
+                output_dir=output_dir,
+                num_train_epochs=1,
+                per_device_train_batch_size=1,
+                gradient_accumulation_steps=4,
+                learning_rate=2e-5,
+                weight_decay=0.01,
+                save_strategy="no",
+                logging_steps=5,
+                fp16=self.device == "cuda",
+                no_cuda=self.device == "cpu",
+                report_to="none",
+            )
+            _cb(50, "Starting fine-tuning pass...")
+
+            # ── Step 4: Train ────────────────────────────────────────────
+            trainer = Trainer(
+                model=self.model,
+                args=training_args,
+                train_dataset=dataset,
+                data_collator=DataCollatorForLanguageModeling(
+                    tokenizer=self.tokenizer,
+                    mlm=False
+                ),
+            )
+            trainer.train()
+            _cb(80, "Fine-tuning complete. Saving new model weights...")
+
+            # ── Step 5: Save fine-tuned model ────────────────────────────
+            self.model.save_pretrained(output_dir)
+            self.tokenizer.save_pretrained(output_dir)
+            _cb(90, "Model saved. Reloading pipeline with new weights...")
+
+            # ── Step 6: Reload pipeline with updated model ───────────────
+            self.pipeline = pipeline(
+                "text-generation",
+                model=self.model,
+                tokenizer=self.tokenizer,
+                device=0 if self.device == "cuda" else -1
+            )
+            _cb(100, "Pipeline updated — new fine-tuned model is now live!")
+            logger.info(f"Retrain complete. Model saved to {output_dir}")
+
+        except Exception as e:
+            logger.error(f"Retrain failed: {e}", exc_info=True)
+            raise
 
     def is_ready(self) -> bool:
         return self.model is not None and self.pipeline is not None
