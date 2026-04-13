@@ -3,8 +3,9 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 
-# Database & Auth (ADDED THESE)
+# Database & Auth
 sqlalchemy==2.0.35
+alembic==1.13.2
 passlib[bcrypt]==1.7.4
 python-jose[cryptography]==3.3.0
 
@@ -16,14 +17,42 @@ posthog==2.4.2
 sentence-transformers==3.1.1
 nltk==3.9.1
 transformers==4.45.1
+datasets==2.21.0
 
 # LLM Integration
-#torch==2.5.0
+# torch==2.5.0
 huggingface-hub==0.25.1
+peft==0.12.0
+trl==0.11.1
+accelerate==0.34.2
+bitsandbytes==0.49.2
+
+# Model Evaluation (BLEU / ROUGE) â€” Sprint 5
+rouge-score==0.1.2
+evaluate==0.4.3
+sacrebleu==2.4.3
 
 # PDF Processing
 PyPDF2==3.0.1
 pdfplumber==0.11.4
+reportlab==4.2.2
+
+# Session Export â€” Sprint 3
+aiofiles==24.1.0
+
+# Background Tasks & Scheduling â€” Sprint 4/5
+apscheduler==3.10.4
+celery==5.4.0
+redis==5.1.1
+
+# Real-time Progress Bar â€” Sprint 4
+websockets==13.1
+
+# Email Notifications â€” Sprint 3
+fastapi-mail==1.4.1
+
+# Rate Limiting â€” Sprint 3
+slowapi==0.1.9
 
 # Utilities
 python-dotenv==1.0.1
@@ -31,6 +60,8 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 numpy==1.26.4
 requests==2.32.3
+httpx==0.27.2
 
-# Development
+# Development & Testing
 pytest==8.3.3
+pytest-asyncio==0.24.0

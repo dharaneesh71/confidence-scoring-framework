@@ -1,13 +1,31 @@
 {
-  "evaluated_at": "2026-04-09T09:51:43.934141",
-  "total_samples": 3,
+  "evaluated_at": "2026-04-11T21:21:40.958170",
+  "total_samples": 5,
   "averages": {
-    "bleu": 0.9587,
-    "rouge1": 0.9781,
-    "rouge2": 0.978,
-    "rougeL": 0.9781
+    "bleu": 0.9752,
+    "rouge1": 0.9868,
+    "rouge2": 0.9868,
+    "rougeL": 0.9868
   },
   "per_sample": [
+    {
+      "question": "What is natural language processing?",
+      "type": "gold_standard",
+      "confidence": 0.85,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "what are embeddings?",
+      "type": "gold_standard",
+      "confidence": 0.85,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
     {
       "question": "What are transformers?",
       "type": "gold_standard",
