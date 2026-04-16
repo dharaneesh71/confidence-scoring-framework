@@ -23,7 +23,12 @@ class LlamaService:
         self.model          = None
         self.tokenizer      = None
         self.pipeline       = None
-        self.device         = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            self.device = "cuda"
+        elif torch.backends.mps.is_available():
+            self.device = "mps"
+        else:
+            self.device = "cpu"
         self.model_name     = settings.LLAMA_MODEL_NAME
         self.finetuned_path = Path("data/finetuned_model")
         self._initialize()
@@ -31,7 +36,7 @@ class LlamaService:
     def _initialize(self):
         try:
             # Only login if NOT in offline mode
-            if not os.environ.get("TRANSFORMERS_OFFLINE") and settings.HUGGINGFACE_TOKEN:
+            if os.environ.get("TRANSFORMERS_OFFLINE") != "1" and settings.HUGGINGFACE_TOKEN:
                 login(token=settings.HUGGINGFACE_TOKEN)
                 logger.info("HuggingFace login successful")
 
@@ -42,7 +47,8 @@ class LlamaService:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 load_path,
                 token=settings.HUGGINGFACE_TOKEN,
-                local_files_only=True
+                local_files_only=True,
+                fix_mistral_regex=True
             )
 
             if self.tokenizer.pad_token_id is None:
