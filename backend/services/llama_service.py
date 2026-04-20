@@ -47,7 +47,7 @@ class LlamaService:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 load_path,
                 token=settings.HUGGINGFACE_TOKEN,
-                local_files_only=True,
+                local_files_only=False,
                 fix_mistral_regex=True
             )
 
@@ -59,7 +59,7 @@ class LlamaService:
                 token=settings.HUGGINGFACE_TOKEN,
                 dtype=torch.float16 if self.device == "cuda" else torch.float32,
                 device_map="auto" if self.device == "cuda" else None,
-                local_files_only=True
+                local_files_only=False
             )
 
             self.pipeline = pipeline(
