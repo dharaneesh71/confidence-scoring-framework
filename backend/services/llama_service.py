@@ -57,7 +57,7 @@ class LlamaService:
             self.model = AutoModelForCausalLM.from_pretrained(
                 load_path,
                 token=settings.HUGGINGFACE_TOKEN,
-                dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                dtype="auto",
                 device_map="auto" if self.device == "cuda" else None,
                 local_files_only=False
             )
@@ -73,7 +73,6 @@ class LlamaService:
 
         except Exception as e:
             logger.error(f"Failed to initialize Llama model: {e}", exc_info=True)
-            print(f"❌ MODEL LOAD ERROR: {e}") 
             self.model    = None
             self.pipeline = None
 
