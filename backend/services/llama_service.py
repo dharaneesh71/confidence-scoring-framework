@@ -73,6 +73,7 @@ class LlamaService:
 
         except Exception as e:
             logger.error(f"Failed to initialize Llama model: {e}", exc_info=True)
+            print(f"❌ MODEL LOAD ERROR: {e}") 
             self.model    = None
             self.pipeline = None
 
