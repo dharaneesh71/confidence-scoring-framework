@@ -104,9 +104,10 @@ class LlamaService:
     # Stored here so retrain() can re-stamp them after save_pretrained()
     # resets the model's generation_config.
     _GEN_CONFIG = dict(
-        max_new_tokens     = 512,
+        max_new_tokens     = 2048,
         temperature        = 0.7,
         do_sample          = True,
+        max_length         = None,
         top_p              = 0.9,
         repetition_penalty = 1.1,
     )
@@ -189,6 +190,7 @@ class LlamaService:
             model=self.model,
             tokenizer=self.tokenizer,
             **_pipeline_device_kwargs(self.device),
+            **self._GEN_CONFIG
         )
 
     # ------------------------------------------------------------------ #
@@ -247,8 +249,7 @@ class LlamaService:
 
         try:
             with torch.no_grad():
-                # ✅ Zero generation kwargs — all params live on model.generation_config
-                response = self.pipeline(prompt)
+                response = self.pipeline(prompt,**self._GEN_CONFIG)
 
             generated_text: str = response[0]["generated_text"]
 
@@ -338,7 +339,7 @@ class LlamaService:
             save_strategy               = "no",
             logging_steps               = 5,
             fp16                        = (self.device == "cuda"),
-            bf16                        = False,     # needs Ampere+ GPU
+            bf16                        = False,   
             no_cuda                     = (self.device == "cpu"),
             use_mps_device              = (self.device == "mps"),
             report_to                   = "none",

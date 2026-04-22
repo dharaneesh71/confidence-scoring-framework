@@ -72,12 +72,11 @@ async def api_root():
         }
     }
 
-
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host=settings.BACKEND_HOST,
         port=settings.BACKEND_PORT,
-        reload=False,
+        reload=settings.DEBUG_MODE,
         log_level=settings.LOG_LEVEL.lower()
     )
