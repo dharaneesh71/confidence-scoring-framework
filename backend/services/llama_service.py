@@ -104,7 +104,7 @@ class LlamaService:
     # Stored here so retrain() can re-stamp them after save_pretrained()
     # resets the model's generation_config.
     _GEN_CONFIG = dict(
-        max_new_tokens     = 2048,
+        max_new_tokens     = 768,
         temperature        = 0.7,
         do_sample          = True,
         max_length         = None,
@@ -163,7 +163,7 @@ class LlamaService:
             # All generation params live here and nowhere else.
             # The pipeline call passes ZERO extra kwargs, so there is no
             # "generation_config + kwargs" merge → warning is gone entirely.
-            self._stamp_generation_config()
+            #self._stamp_generation_config()
 
             # Disable gradient tracking for inference (~30 % memory saving)
             self.model.eval()
