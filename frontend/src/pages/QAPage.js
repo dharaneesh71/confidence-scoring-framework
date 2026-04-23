@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { AreaChart, Area, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
 import ReactMarkdown from 'react-markdown';
 import {
   Paper, TextField, Button, Typography, Box,
   CircularProgress, Alert, Chip, Card, CardContent, LinearProgress,
-  useTheme, Divider, Rating, Collapse
+  useTheme, Divider, Rating, Collapse, Skeleton,
+  Tooltip, FormControl, InputLabel, Select, MenuItem
 } from '@mui/material';
 import {
   Send, Lightbulb, CheckCircle, Public, Person, Warning
@@ -20,11 +21,23 @@ const isLowConfidence    = (res) => res && res.confidence_score > 0.05 && res.co
 
 // ── AI MESSAGE BUBBLE ─────────────────────────────────────────────────────────
 const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
-  const [rating, setRating]               = useState(0);
-  const [comment, setComment]             = useState('');
-  const [feedbackSent, setFeedbackSent]   = useState(false);
+  const [rating, setRating]                   = useState(0);
+  const [comment, setComment]                 = useState('');
+  const [feedbackSent, setFeedbackSent]       = useState(false);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
-  const [feedbackError, setFeedbackError] = useState(null);
+  const [feedbackError, setFeedbackError]     = useState(null);
+
+  // ── animate confidence bar in on mount ──────────────────────────────────
+  const [barValue, setBarValue] = useState(0);
+  useEffect(() => {
+    // Small delay so the transition is visible after render
+    const t = setTimeout(() => {
+      if (msg.confidence_score !== undefined && msg.confidence_score !== null) {
+        setBarValue(msg.confidence_score * 100);
+      }
+    }, 150);
+    return () => clearTimeout(t);
+  }, [msg.confidence_score]);
 
   const flagged = isLowConfidence(msg);
 
@@ -45,7 +58,8 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
       setFeedbackError('Cannot submit feedback: history_id is missing from the API response.');
       return;
     }
-    setFeedbackLoading(true); setFeedbackError(null);
+    setFeedbackLoading(true);
+    setFeedbackError(null);
     try {
       const response = await fetch(`${API_BASE}/api/feedback`, {
         method: 'POST',
@@ -67,7 +81,7 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
     }
   };
 
-  const references  = msg.citations || msg.sources || msg.source_documents || [];
+  const references    = msg.citations || msg.sources || msg.source_documents || [];
   const hasReferences = !isGeneralKnowledge(msg) && references.length > 0;
 
   return (
@@ -76,11 +90,13 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
       border: flagged ? `2px solid ${theme.palette.error.main}` : undefined,
     }}>
 
-      {/* Low confidence warning banner */}
+      {/* ── 1. Low confidence warning banner ─────────────────────────────── */}
       {flagged && (
         <Box sx={{
           display: 'flex', alignItems: 'center', gap: 1.5, px: 3, py: 1.5,
-          bgcolor: theme.palette.mode === 'dark' ? 'rgba(211,47,47,0.15)' : 'rgba(211,47,47,0.08)',
+          bgcolor: theme.palette.mode === 'dark'
+            ? 'rgba(211,47,47,0.15)'
+            : 'rgba(211,47,47,0.08)',
           borderBottom: `1px solid ${theme.palette.error.main}`,
           borderRadius: '14px 14px 0 0',
         }}>
@@ -91,14 +107,19 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
         </Box>
       )}
 
-      {/* Answer text */}
+      {/* ── Answer text ──────────────────────────────────────────────────── */}
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h6" color="secondary" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Typography
+          variant="h6"
+          color="secondary"
+          gutterBottom
+          sx={{ display: 'flex', alignItems: 'center', gap: 1 }}
+        >
           <Lightbulb fontSize="small" /> Answer:
         </Typography>
         <Box sx={{
           lineHeight: 1.8, fontSize: '1.05rem', pl: 1,
-          '& p': { margin: '0 0 1rem 0' },
+          '& p':       { margin: '0 0 1rem 0' },
           '& ul, & ol': { margin: '0 0 1rem 0', paddingLeft: '2rem' }
         }}>
           <ReactMarkdown>{msg.answer}</ReactMarkdown>
@@ -107,7 +128,7 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
 
       <Divider sx={{ my: 3 }} />
 
-      {/* Confidence block */}
+      {/* ── Confidence block ─────────────────────────────────────────────── */}
       <Box sx={{
         my: 3, p: 3,
         border: `1px solid ${theme.palette.divider}`,
@@ -118,8 +139,12 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <Public sx={{ fontSize: 36, color: 'info.main' }} />
             <Box>
-              <Typography variant="h6" sx={{ fontWeight: 'bold', color: 'info.main' }}>General Knowledge Response</Typography>
-              <Typography variant="body2" color="text.secondary">Answer not found in Ground Truth documents.</Typography>
+              <Typography variant="h6" sx={{ fontWeight: 'bold', color: 'info.main' }}>
+                General Knowledge Response
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Answer not found in Ground Truth documents.
+              </Typography>
             </Box>
           </Box>
         ) : (
@@ -135,12 +160,23 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
                 sx={{ fontWeight: 'bold' }}
               />
             </Box>
+
+            {/* ── 3. Animated confidence bar ──────────────────────────────── */}
             <LinearProgress
               variant="determinate"
-              value={msg.confidence_score * 100}
+              value={barValue}
               color={getConfidenceColor(msg.confidence_score)}
-              sx={{ height: 10, borderRadius: 5, mb: 2 }}
+              sx={{
+                height: 10,
+                borderRadius: 5,
+                mb: 2,
+                transition: 'all 1s ease-in-out',
+                '& .MuiLinearProgress-bar': {
+                  transition: 'transform 1.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                },
+              }}
             />
+
             {msg.explanation && (
               <Box sx={{ p: 2, bgcolor: theme.palette.action.hover, borderRadius: '8px' }}>
                 <Typography variant="body2" color="text.secondary">
@@ -152,7 +188,7 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
         )}
       </Box>
 
-      {/* Source references */}
+      {/* ── Source references ─────────────────────────────────────────────── */}
       {hasReferences && (
         <Box sx={{ mt: 3 }}>
           <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 'bold', color: 'text.secondary' }}>
@@ -164,7 +200,9 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
             return (
               <Card key={idx} variant="outlined" sx={{ mb: 1.5, bgcolor: 'transparent' }}>
                 <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-                  <Typography variant="body2" color="secondary" sx={{ fontWeight: 'bold' }}>{sourceName}</Typography>
+                  <Typography variant="body2" color="secondary" sx={{ fontWeight: 'bold' }}>
+                    {sourceName}
+                  </Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, fontStyle: 'italic' }}>
                     "{excerptText}"
                   </Typography>
@@ -177,31 +215,45 @@ const AIMessageBubble = ({ msg, user, theme, cardStyle }) => {
 
       <Divider sx={{ my: 4 }} />
 
-      {/* Feedback */}
+      {/* ── 5. Inline feedback (per-message) ─────────────────────────────── */}
       <Box sx={{ textAlign: 'center' }}>
         {!feedbackSent ? (
           <>
             <Typography component="legend" sx={{ mb: 1 }}>Rate this answer</Typography>
-            <Rating value={rating} size="large" onChange={(e, v) => { setRating(v); setFeedbackError(null); }} />
+            <Rating
+              value={rating}
+              size="large"
+              onChange={(e, v) => { setRating(v); setFeedbackError(null); }}
+            />
             <Collapse in={rating > 0 && rating < 5}>
               <TextField
                 fullWidth multiline rows={2}
                 placeholder="What was missing? (Optional)"
-                value={comment} onChange={(e) => setComment(e.target.value)}
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
                 sx={{ mt: 2 }}
               />
             </Collapse>
             {feedbackError && (
-              <Alert severity="error" sx={{ mt: 2, borderRadius: '8px', textAlign: 'left' }}>{feedbackError}</Alert>
+              <Alert severity="error" sx={{ mt: 2, borderRadius: '8px', textAlign: 'left' }}>
+                {feedbackError}
+              </Alert>
             )}
             {rating > 0 && (
-              <Button onClick={submitFeedback} variant="outlined" disabled={feedbackLoading} sx={{ mt: 2, minWidth: '160px' }}>
+              <Button
+                onClick={submitFeedback}
+                variant="outlined"
+                disabled={feedbackLoading}
+                sx={{ mt: 2, minWidth: '160px' }}
+              >
                 {feedbackLoading ? <CircularProgress size={20} /> : 'Submit Feedback'}
               </Button>
             )}
           </>
         ) : (
-          <Alert severity="success" sx={{ justifyContent: 'center' }}>Thanks for your feedback!</Alert>
+          <Alert severity="success" sx={{ justifyContent: 'center' }}>
+            Thanks for your feedback! ✅
+          </Alert>
         )}
       </Box>
     </Paper>
@@ -223,7 +275,7 @@ const QAPage = ({ clearSelection }) => {
 
   // ── Domain state ───────────────────────────────────────────────────────────
   const [domains, setDomains]               = useState([]);
-  const [selectedDomain, setSelectedDomain] = useState('All');
+  const [selectedDomain, setSelectedDomain] = useState('');   // '' = All
 
   const inputBarRef                         = useRef(null);
   const [inputBarHeight, setInputBarHeight] = useState(120);
@@ -233,7 +285,9 @@ const QAPage = ({ clearSelection }) => {
   const cardStyle = {
     p: 4, borderRadius: '16px',
     background: theme.palette.mode === 'dark' ? 'rgba(30, 41, 59, 0.8)' : '#ffffff',
-    boxShadow: theme.palette.mode === 'dark' ? '0 8px 32px rgba(0,0,0,0.3)' : '0 8px 32px rgba(0,0,0,0.05)',
+    boxShadow: theme.palette.mode === 'dark'
+      ? '0 8px 32px rgba(0,0,0,0.3)'
+      : '0 8px 32px rgba(0,0,0,0.05)',
   };
 
   const chartData = messages
@@ -247,11 +301,11 @@ const QAPage = ({ clearSelection }) => {
       headers: { 'Authorization': `Bearer ${user.token}` }
     })
       .then(res => res.json())
-      .then(data => setDomains(['All', ...data]))
+      .then(data => setDomains(data))
       .catch(err => console.error('Error fetching domains', err));
   }, [user]);
 
-  // Track input bar height
+  // ── Track input bar height ────────────────────────────────────────────────
   useEffect(() => {
     if (!inputBarRef.current) return;
     const observer = new ResizeObserver(() => {
@@ -261,7 +315,7 @@ const QAPage = ({ clearSelection }) => {
     return () => observer.disconnect();
   }, []);
 
-  // Scroll behaviour
+  // ── Scroll behaviour ──────────────────────────────────────────────────────
   useEffect(() => {
     if (loading) {
       setTimeout(() => lastQuestionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
@@ -270,7 +324,7 @@ const QAPage = ({ clearSelection }) => {
     }
   }, [loading, messages]);
 
-  // Load session or start fresh
+  // ── Load session or start fresh ───────────────────────────────────────────
   useEffect(() => {
     if (sessionId) { loadSession(sessionId); }
     else           { handleStartNew(); }
@@ -287,8 +341,11 @@ const QAPage = ({ clearSelection }) => {
       const data = await response.json();
       setCurrentSessionId(data.session_id);
       setMessages(data.messages || []);
-    } catch (err) { setError('Could not retrieve session details.'); }
-    finally { setLoading(false); }
+    } catch (err) {
+      setError('Could not retrieve session details.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleStartNew = () => {
@@ -305,9 +362,10 @@ const QAPage = ({ clearSelection }) => {
     if (!question.trim()) { setError('Please enter a question'); return; }
 
     const userQuestion = question;
-    setQuestion(''); setError(null);
+    setQuestion('');
+    setError(null);
 
-    // Optimistic update
+    // Optimistic update — show user bubble immediately
     setMessages(prev => [...prev, { question: userQuestion, is_optimistic: true }]);
     setLoading(true);
 
@@ -321,7 +379,7 @@ const QAPage = ({ clearSelection }) => {
         body: JSON.stringify({
           question:   userQuestion,
           session_id: currentSessionId,
-          domain:     selectedDomain === 'All' ? null : selectedDomain,  // ← domain filter
+          domain:     selectedDomain || undefined,   // undefined = all domains
         }),
       });
 
@@ -333,6 +391,7 @@ const QAPage = ({ clearSelection }) => {
         navigate(`/chat/${data.session_id}`);
       }
 
+      // Replace optimistic message with real response
       setMessages(prev => [...prev.filter(m => !m.is_optimistic), data]);
 
     } catch (err) {
@@ -346,7 +405,7 @@ const QAPage = ({ clearSelection }) => {
   return (
     <Box sx={{ position: 'relative', height: '100%', width: '100%', overflow: 'hidden' }}>
 
-      {/* ── SCROLLABLE CHAT AREA ── */}
+      {/* ── SCROLLABLE CHAT AREA ─────────────────────────────────────────── */}
       <Box sx={{
         position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
         overflowY: 'auto',
@@ -356,9 +415,14 @@ const QAPage = ({ clearSelection }) => {
       }}>
         <Box sx={{ width: '100%', maxWidth: '900px', margin: '0 auto', display: 'flex', flexDirection: 'column' }}>
 
-          {/* Trust score trend */}
+          {/* Trust score trend chart */}
           {chartData.length > 1 && (
-            <Paper sx={{ p: 2, mb: 4, bgcolor: 'rgba(0,209,255,0.05)', border: '1px solid rgba(0,209,255,0.2)', borderRadius: '12px' }}>
+            <Paper sx={{
+              p: 2, mb: 4,
+              bgcolor: 'rgba(0,209,255,0.05)',
+              border: '1px solid rgba(0,209,255,0.2)',
+              borderRadius: '12px'
+            }}>
               <Typography variant="caption" sx={{ color: '#00d1ff', fontWeight: 'bold' }}>
                 SESSION TRUST SCORE TREND (%)
               </Typography>
@@ -371,8 +435,23 @@ const QAPage = ({ clearSelection }) => {
                         <stop offset="95%" stopColor="#00d1ff" stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <Area type="monotone" dataKey="score" stroke="#00d1ff" fillOpacity={1} fill="url(#colorScore)" strokeWidth={2} />
-                    <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', color: '#fff' }} />
+                    <Area
+                      type="monotone"
+                      dataKey="score"
+                      stroke="#00d1ff"
+                      fillOpacity={1}
+                      fill="url(#colorScore)"
+                      strokeWidth={2}
+                    />
+                    {/* aliased to RechartsTooltip to avoid conflict with MUI Tooltip */}
+                    <RechartsTooltip
+                      contentStyle={{
+                        backgroundColor: '#1e293b',
+                        border: 'none',
+                        borderRadius: '8px',
+                        color: '#fff'
+                      }}
+                    />
                     <YAxis hide domain={[0, 100]} />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -385,7 +464,7 @@ const QAPage = ({ clearSelection }) => {
             <Box sx={{ m: 'auto', textAlign: 'center', color: 'text.secondary', mt: 4 }}>
               <Lightbulb sx={{ fontSize: 60, mb: 2, opacity: 0.5 }} />
               <Typography variant="h6">How can I help you today?</Typography>
-              {selectedDomain !== 'All' && (
+              {selectedDomain && (
                 <Chip
                   label={`Searching in: ${selectedDomain}`}
                   color="primary" variant="outlined" size="small" sx={{ mt: 1 }}
@@ -393,18 +472,24 @@ const QAPage = ({ clearSelection }) => {
               )}
             </Box>
           )}
-          
+
           {/* Messages loop */}
           {messages.map((msg, idx) => {
             const isLastMessage = idx === messages.length - 1;
             return (
               <Box key={idx} sx={{ width: '100%', mb: 2 }}>
+                {/* User bubble */}
                 {msg.question && (
-                  <Box ref={isLastMessage ? lastQuestionRef : null}
-                    sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
+                  <Box
+                    ref={isLastMessage ? lastQuestionRef : null}
+                    sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}
+                  >
                     <Paper sx={{
-                      p: 2, bgcolor: theme.palette.primary.main, color: 'white',
-                      borderRadius: '16px 16px 0 16px', maxWidth: '85%'
+                      p: 2,
+                      bgcolor: theme.palette.primary.main,
+                      color: 'white',
+                      borderRadius: '16px 16px 0 16px',
+                      maxWidth: '85%'
                     }}>
                       <Typography variant="body1" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         {msg.question} <Person fontSize="small" />
@@ -412,6 +497,8 @@ const QAPage = ({ clearSelection }) => {
                     </Paper>
                   </Box>
                 )}
+
+                {/* AI answer bubble */}
                 {msg.answer && !msg.is_optimistic && (
                   <AIMessageBubble msg={msg} user={user} theme={theme} cardStyle={cardStyle} />
                 )}
@@ -419,14 +506,29 @@ const QAPage = ({ clearSelection }) => {
             );
           })}
 
-          {/* Loading indicator */}
+          {/* ── 1. Loading skeleton (replaces plain spinner) ─────────────── */}
           {loading && (
-            <Box sx={{ display: 'flex', justifyContent: 'flex-start', mb: 4 }}>
-              <Box sx={{ p: 3, display: 'flex', gap: 2, alignItems: 'center',
-                         bgcolor: theme.palette.action.hover, borderRadius: '16px 16px 16px 0' }}>
-                <CircularProgress size={24} color="secondary" />
-                <Typography variant="body2" color="text.secondary">Analyzing documents...</Typography>
-              </Box>
+            <Box sx={{ width: '100%', mb: 4 }}>
+              {/* Skeleton mimics the AI bubble layout */}
+              <Paper sx={{
+                ...cardStyle, mt: 2,
+                border: `1px solid ${theme.palette.divider}`,
+              }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                  <Skeleton variant="circular" width={24} height={24} />
+                  <Skeleton variant="text" width="20%" height={28} />
+                </Box>
+                <Skeleton variant="text" width="90%" height={22} />
+                <Skeleton variant="text" width="80%" height={22} sx={{ mt: 0.5 }} />
+                <Skeleton variant="text" width="85%" height={22} sx={{ mt: 0.5 }} />
+                <Skeleton
+                  variant="rectangular"
+                  height={120}
+                  sx={{ mt: 2, borderRadius: 2 }}
+                />
+                <Skeleton variant="text" width="40%" height={20} sx={{ mt: 1.5 }} />
+                <Skeleton variant="text" width="60%" height={20} sx={{ mt: 0.5 }} />
+              </Paper>
             </Box>
           )}
 
@@ -434,7 +536,7 @@ const QAPage = ({ clearSelection }) => {
         </Box>
       </Box>
 
-      {/* ── FIXED BOTTOM INPUT BAR ── */}
+      {/* ── FIXED BOTTOM INPUT BAR ───────────────────────────────────────── */}
       <Box
         ref={inputBarRef}
         sx={{
@@ -447,49 +549,60 @@ const QAPage = ({ clearSelection }) => {
         }}
       >
         <Box sx={{ width: '100%', maxWidth: '900px', px: { xs: 2, md: 4 } }}>
-        
-          {/* ── DOMAIN SELECTOR CHIPS ─────────────────────────────────────── */}
-          {domains.length > 1 && (
-            <Box sx={{
-              display: 'flex', alignItems: 'center', gap: 1,
-              mb: 1.5, flexWrap: 'wrap'
-            }}>
-              <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap', fontWeight: 'bold' }}>
-                Domain:
-              </Typography>
-              {domains.map((d) => (
+
+          {/* ── 4. Domain dropdown ──────────────────────────────────────────── */}
+          {domains.length > 0 && (
+            <Box sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 2 }}>
+              <FormControl size="small" sx={{ minWidth: 180 }}>
+                <InputLabel id="domain-label">Domain</InputLabel>
+                <Select
+                  labelId="domain-label"
+                  value={selectedDomain}
+                  onChange={(e) => setSelectedDomain(e.target.value)}
+                  label="Domain"
+                  sx={{ borderRadius: '12px' }}
+                >
+                  <MenuItem value="">
+                    <em>All Domains</em>
+                  </MenuItem>
+                  {domains.map((d) => (
+                    <MenuItem key={d} value={d}>{d}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              {selectedDomain && (
                 <Chip
-                  key={d}
-                  label={d}
+                  label={`Filtered: ${selectedDomain}`}
                   size="small"
-                  onClick={() => setSelectedDomain(d)}
-                  color={selectedDomain === d ? 'primary' : 'default'}
-                  variant={selectedDomain === d ? 'filled' : 'outlined'}
-                  sx={{
-                    cursor: 'pointer',
-                    fontWeight: selectedDomain === d ? 'bold' : 'normal',
-                    transition: 'all 0.15s ease',
-                  }}
+                  color="primary"
+                  variant="outlined"
+                  onDelete={() => setSelectedDomain('')}
                 />
-              ))}
+              )}
             </Box>
           )}
-          {/* ──────────────────────────────────────────────────────────────── */}
 
-          {error && <Alert severity="error" sx={{ mb: 2, borderRadius: '12px' }}>{error}</Alert>}
+          {error && (
+            <Alert severity="error" sx={{ mb: 2, borderRadius: '12px' }}>{error}</Alert>
+          )}
 
-          {/* Input box */}
-          <Paper elevation={0} sx={{
-            border: `1px solid ${theme.palette.divider}`,
-            borderRadius: '24px', p: 1,
-            display: 'flex', alignItems: 'flex-end',
-            bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : '#ffffff',
-          }}>
+          {/* Input row */}
+          <Paper
+            elevation={0}
+            sx={{
+              border: `1px solid ${theme.palette.divider}`,
+              borderRadius: '24px', p: 1,
+              display: 'flex', alignItems: 'flex-end',
+              bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : '#ffffff',
+            }}
+          >
             <TextField
               fullWidth multiline maxRows={5} variant="standard"
-              placeholder={selectedDomain === 'All'
-                ? 'Ask a question across all domains...'
-                : `Ask a question in ${selectedDomain}...`}
+              placeholder={
+                selectedDomain
+                  ? `Ask a question in ${selectedDomain}...`
+                  : 'Ask a question across all domains...'
+              }
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               disabled={loading}
@@ -498,14 +611,39 @@ const QAPage = ({ clearSelection }) => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
               }}
             />
-            <Button
-              variant="contained" color="secondary"
-              disabled={loading || !question.trim()}
-              onClick={handleSubmit}
-              sx={{ height: '48px', minWidth: '48px', borderRadius: '24px', ml: 1, mb: 0.5 }}
+
+            {/* ── 2. Submit button with Tooltip ───────────────────────────── */}
+            <Tooltip
+              title={loading ? 'Thinking...' : !question.trim() ? 'Type a question first' : 'Send question'}
+              arrow
+              placement="top"
             >
-              <Send fontSize="small" />
-            </Button>
+              {/* span wrapper required so Tooltip works on a disabled Button */}
+              <span>
+                <Button
+                  variant="contained"
+                  color="secondary"
+                  disabled={loading || !question.trim()}
+                  onClick={handleSubmit}
+                  endIcon={
+                    loading
+                      ? <CircularProgress size={18} color="inherit" />
+                      : <Send fontSize="small" />
+                  }
+                  sx={{
+                    height: '48px',
+                    minWidth: '110px',
+                    borderRadius: '20px',
+                    ml: 1, mb: 0.5,
+                    fontWeight: 'bold',
+                    textTransform: 'none',
+                    fontSize: '0.95rem',
+                  }}
+                >
+                  {loading ? 'Thinking...' : 'Ask'}
+                </Button>
+              </span>
+            </Tooltip>
           </Paper>
 
           <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', color: 'text.secondary', mt: 1 }}>

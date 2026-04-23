@@ -9,6 +9,7 @@ from fastapi import (
     APIRouter, BackgroundTasks, Depends,
     File, Form, HTTPException, UploadFile, status
 )
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -682,7 +683,56 @@ def get_training_status(
 
 
 # ==========================================
-# 5. SYSTEM ROUTES
+# 5. TASK 18 — MODEL DEPLOYMENT ROUTES
+# ==========================================
+
+class DeployModelRequest(BaseModel):
+    new_model_path:  str
+    backup_path: Optional[str] = None
+
+
+@router.post("/admin/deploy-model")
+def deploy_model(
+    request:      DeployModelRequest,
+    current_user: User = Depends(get_current_active_admin)
+):
+    """Hot-swap to a new model path. Auto-rolls back on failure. Admin only."""
+    backup  = request.backup_path or settings.LLAMA_MODEL_NAME
+    success = llama_service.hot_swap_model(request.new_model_path)
+
+    if not success:
+        rolled_back = llama_service.rollback_model(backup)
+        return {
+            "status":      "rolled_back",
+            "message":     f"Swap to '{request.new_model_path}' failed. Reverted to '{backup}'.",
+            "rollback_ok": rolled_back,
+        }
+    return {
+        "status":  "success",
+        "message": f"Model hot-swapped to '{request.new_model_path}' successfully.",
+    }
+
+
+# ==========================================
+# 6. TASK 19 — MODEL VERSION HISTORY ROUTE
+# ==========================================
+
+@router.get("/admin/model-history")
+def get_model_history(
+    current_user: User = Depends(get_current_active_admin)
+):
+    """Returns model version history with validation scores. Admin only."""
+    history_path = Path("data/model_history.json")
+    if not history_path.exists():
+        return {"history": []}
+    try:
+        return {"history": json.loads(history_path.read_text())}
+    except Exception:
+        return {"history": []}
+
+
+# ==========================================
+# 7. SYSTEM ROUTES
 # ==========================================
 
 @router.get("/status", response_model=StatusResponse)

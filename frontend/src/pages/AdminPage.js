@@ -38,6 +38,9 @@ const AdminPage = () => {
   // ── Domain state ───────────────────────────────────────────────────────────
   const [domainInput, setDomainInput] = useState('General');
 
+  // ── Task 19 — Model Version History ───────────────────────────────────────
+  const [modelHistory, setModelHistory] = useState([]);
+
   // ── Fetchers ───────────────────────────────────────────────────────────────
   const fetchAnalytics = useCallback(async () => {
     try {
@@ -75,14 +78,27 @@ const AdminPage = () => {
     } catch (err) { console.error('Error fetching low confidence sessions', err); }
   }, [user]);
 
+  const fetchModelHistory = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/model-history`, {
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setModelHistory(data.history || []);
+      }
+    } catch (err) { console.error('Error fetching model history', err); }
+  }, [user]);
+
   useEffect(() => {
     if (user) {
       fetchAnalytics();
       fetchDocuments();
       fetchFeedbacks();
       fetchLowConfidence();
+      fetchModelHistory();
     }
-  }, [user, fetchAnalytics, fetchDocuments, fetchFeedbacks, fetchLowConfidence]);
+  }, [user, fetchAnalytics, fetchDocuments, fetchFeedbacks, fetchLowConfidence, fetchModelHistory]);
 
   // ── Retraining polling ─────────────────────────────────────────────────────
   const fetchTrainingStatus = useCallback(async () => {
@@ -318,6 +334,67 @@ const AdminPage = () => {
         </Box>
       </Paper>
 
+      {/* TASK 19 — MODEL VERSION HISTORY */}
+      <Paper sx={{ ...cardStyle, border: `1px solid ${theme.palette.success.main}` }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 3 }}>
+          <Assessment sx={{ color: 'success.main' }} />
+          <Typography variant="h6" fontWeight="bold" sx={{ color: 'success.main' }}>
+            Model Version History
+          </Typography>
+          <Chip label={`${modelHistory.length} versions`} color="success" size="small" sx={{ ml: 'auto' }} />
+        </Box>
+        {modelHistory.length === 0 ? (
+          <Typography color="text.secondary" sx={{ textAlign: 'center', py: 3 }}>
+            No model versions yet. Trigger retraining to create the first version.
+          </Typography>
+        ) : (
+          <>
+            {/* Bar chart — accuracy and F1 across versions */}
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={modelHistory} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                <XAxis dataKey="version" />
+                <YAxis domain={[0, 1]} tickFormatter={(v) => `${Math.round(v * 100)}%`} />
+                <Tooltip formatter={(v) => `${(v * 100).toFixed(1)}%`} />
+                <Bar dataKey="accuracy" name="Accuracy" radius={[4, 4, 0, 0]}
+                     fill={theme.palette.success.main} />
+                <Bar dataKey="f1_score" name="F1 Score" radius={[4, 4, 0, 0]}
+                     fill={theme.palette.primary.main} />
+              </BarChart>
+            </ResponsiveContainer>
+
+            {/* Version table */}
+            <TableContainer sx={{ mt: 2 }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Version</TableCell>
+                    <TableCell align="center">Accuracy</TableCell>
+                    <TableCell align="center">F1 Score</TableCell>
+                    <TableCell align="center">Loss</TableCell>
+                    <TableCell>Trained At</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {modelHistory.map((v, idx) => (
+                    <TableRow key={idx} hover>
+                      <TableCell>
+                        <Chip label={v.version} size="small" color="success" variant="outlined" />
+                      </TableCell>
+                      <TableCell align="center">{(v.accuracy * 100).toFixed(1)}%</TableCell>
+                      <TableCell align="center">{(v.f1_score * 100).toFixed(1)}%</TableCell>
+                      <TableCell align="center">{v.loss.toFixed(4)}</TableCell>
+                      <TableCell sx={{ fontSize: '0.75rem' }}>
+                        {new Date(v.timestamp).toLocaleString()}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </>
+        )}
+      </Paper>
+
       {/* 4. USER FEEDBACK TABLE */}
       <Paper sx={cardStyle}>
         <Typography variant="h6" fontWeight="bold" sx={{ mb: 3 }}>
@@ -362,7 +439,7 @@ const AdminPage = () => {
         {/* Upload box — now with domain input */}
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mb: 4, p: 3,
                    border: `1px dashed ${theme.palette.divider}`, borderRadius: 2 }}>
-          
+
           {/* Row 1: File picker */}
           <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
             <Button variant="contained" component="label" startIcon={<CloudUpload />}>

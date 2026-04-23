@@ -118,3 +118,18 @@ class ErrorResponse(BaseModel):
     error: str = Field(..., description="Error message")
     detail: Optional[str] = Field(None, description="Detailed error information")
     timestamp: datetime = Field(default_factory=datetime.now, description="Error timestamp")
+
+class DeployModelRequest(BaseModel):    
+    new_model_path:  str = Field(..., description="HuggingFace model ID or local path")
+    backup_path: Optional[str] = Field(None, description="Fallback model path if swap fails")
+
+class ModelVersionRecord(BaseModel):
+    version:   str
+    timestamp: str
+    accuracy:  float
+    f1_score:  float
+    loss:      float
+    path:      str
+
+class ModelHistoryResponse(BaseModel):
+    history: List[ModelVersionRecord]

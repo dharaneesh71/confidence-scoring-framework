@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 import {
   AppBar, Toolbar, Typography, Button, Box,
-  CssBaseline, ThemeProvider, createTheme, IconButton
+  CssBaseline, ThemeProvider, createTheme, IconButton, Tooltip
 } from '@mui/material';
 import { 
   AdminPanelSettings, Brightness4, Brightness7, 
@@ -109,6 +109,7 @@ function AppContent() {
             <Toolbar sx={{ display: 'flex', justifyContent: 'space-between' }}>
               <Box sx={{ display: 'flex', alignItems: 'center' }}>
                 {user && (
+                <Tooltip title="Chat History" arrow placement="right">
                   <IconButton
                     edge="start"
                     onClick={() => setSidebarOpen(true)}
@@ -116,6 +117,7 @@ function AppContent() {
                   >
                     <MenuIcon />
                   </IconButton>
+                </Tooltip>
                 )}
                 <Typography
                   variant="h6"
@@ -126,15 +128,18 @@ function AppContent() {
               </Box>
 
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Tooltip title={mode === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'} arrow>
                 <IconButton
                   onClick={() => setMode(prev => prev === 'light' ? 'dark' : 'light')}
                   sx={{ color: `${navColor} !important` }}
                 >
                   {mode === 'dark' ? <Brightness7 /> : <Brightness4 />}
                 </IconButton>
+              </Tooltip>
 
                 {user ? (
                   <>
+                  <Tooltip title="Settings" arrow>
                     <IconButton
                       sx={{
                         color: `${navColor} !important`,
@@ -143,6 +148,7 @@ function AppContent() {
                     >
                       <Settings fontSize="small" />
                     </IconButton>
+                  </Tooltip>
 
                     <Button
                       component={Link}
@@ -168,7 +174,7 @@ function AppContent() {
                         ADMIN
                       </Button>
                     )}
-
+                  <Tooltip title="Sign out of Confid.AI" arrow>
                     <Button
                       onClick={logout}
                       startIcon={<Logout fontSize="small" />}
@@ -176,6 +182,7 @@ function AppContent() {
                     >
                       LOGOUT
                     </Button>
+                  </Tooltip>
                   </>
                 ) : (
                   <Button

@@ -107,7 +107,6 @@ class LlamaService:
         max_new_tokens     = 768,
         temperature        = 0.7,
         do_sample          = True,
-        max_length         = None,
         top_p              = 0.9,
         repetition_penalty = 1.1,
     )
@@ -125,6 +124,20 @@ class LlamaService:
         self._initialize()
 
     # ------------------------------------------------------------------ #
+    #  Finetuned model check                                              #
+    # ------------------------------------------------------------------ #
+
+    def _has_finetuned_model(self) -> bool:
+        """Return True only when the finetuned folder contains real weight files."""
+        if not self.finetuned_path.exists():
+            return False
+        return bool(
+            list(self.finetuned_path.glob("*.safetensors")) or
+            list(self.finetuned_path.glob("pytorch_model*.bin")) or
+            (self.finetuned_path / "config.json").exists()
+        )
+
+    # ------------------------------------------------------------------ #
     #  Initialisation                                                      #
     # ------------------------------------------------------------------ #
 
@@ -134,11 +147,13 @@ class LlamaService:
                 login(token=settings.HUGGINGFACE_TOKEN)
                 logger.info("HuggingFace login successful")
 
+            # ✅ FIXED — only use finetuned path if model weights actually exist
             load_path = (
                 str(self.finetuned_path)
-                if self.finetuned_path.exists()
+                if self._has_finetuned_model()
                 else self.model_name
             )
+
             logger.info(f"Loading model from: {load_path}")
 
             # ── Tokenizer ────────────────────────────────────────────────
@@ -184,14 +199,92 @@ class LlamaService:
         )
 
     def _rebuild_pipeline(self) -> None:
+        self._stamp_generation_config()
         """Single source of truth for (re)creating the HF text-generation pipeline."""
         self.pipeline = pipeline(
             "text-generation",
             model=self.model,
             tokenizer=self.tokenizer,
-            **_pipeline_device_kwargs(self.device),
-            **self._GEN_CONFIG
+            **_pipeline_device_kwargs(self.device)
         )
+
+    # ------------------------------------------------------------------ #
+    #  Task 18 — Hot-Swap & Rollback                                      #
+    # ------------------------------------------------------------------ #
+
+    def hot_swap_model(self, new_model_path: str) -> bool:
+        """Load a new model in-place without restarting the server."""
+        logger.info(f"[HotSwap] Attempting swap → '{new_model_path}'")
+        old_model     = self.model
+        old_tokenizer = self.tokenizer
+        old_pipeline  = self.pipeline
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                new_model_path, token=settings.HUGGINGFACE_TOKEN
+            )
+            if self.tokenizer.pad_token_id is None:
+                self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
+            self.model = AutoModelForCausalLM.from_pretrained(
+                new_model_path,
+                token=settings.HUGGINGFACE_TOKEN,
+                **_model_load_kwargs(self.device),
+            )
+            if self.device == "mps":
+                self.model = self.model.to("mps")
+
+            self.model.eval()
+            self._stamp_generation_config()
+            self._rebuild_pipeline()
+
+            # Free old model memory
+            del old_model, old_tokenizer, old_pipeline
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+            elif self.device == "mps":
+                torch.mps.empty_cache()
+
+            logger.info(f"[HotSwap] Now running: '{new_model_path}'")
+            return True
+
+        except Exception:
+            logger.exception("[HotSwap] Swap failed — restoring previous model")
+            self.model     = old_model
+            self.tokenizer = old_tokenizer
+            self.pipeline  = old_pipeline
+            return False
+
+    def rollback_model(self, backup_path: str) -> bool:
+        """Revert to a known-good model path."""
+        logger.warning(f"[Rollback] Reverting to '{backup_path}'")
+        success = self.hot_swap_model(backup_path)
+        if success:
+            logger.info("[Rollback] Rollback complete")
+        else:
+            logger.error("[Rollback] Rollback also failed — service degraded")
+        return success
+
+    def save_model_version(self, metrics: dict) -> None:
+        """Task 19 — Append a version record to data/model_history.json."""
+        import json
+        from datetime import datetime
+        history_path = Path("data/model_history.json")
+        history: list = []
+        if history_path.exists():
+            try:
+                history = json.loads(history_path.read_text())
+            except Exception:
+                history = []
+        history.append({
+            "version":   f"v{len(history) + 1}",
+            "timestamp": datetime.now().isoformat(),
+            "accuracy":  round(metrics.get("accuracy", 0), 4),
+            "f1_score":  round(metrics.get("f1", 0), 4),
+            "loss":      round(metrics.get("loss", 0), 4),
+            "path":      str(self.finetuned_path),
+        })
+        history_path.write_text(json.dumps(history, indent=2))
+        logger.info(f"[ModelHistory] Saved version v{len(history)}")
 
     # ------------------------------------------------------------------ #
     #  Prompt builders                                                     #
@@ -249,7 +342,7 @@ class LlamaService:
 
         try:
             with torch.no_grad():
-                response = self.pipeline(prompt,**self._GEN_CONFIG)
+                response = self.pipeline(prompt)
 
             generated_text: str = response[0]["generated_text"]
 
@@ -339,7 +432,7 @@ class LlamaService:
             save_strategy               = "no",
             logging_steps               = 5,
             fp16                        = (self.device == "cuda"),
-            bf16                        = False,   
+            bf16                        = False,
             no_cuda                     = (self.device == "cpu"),
             use_mps_device              = (self.device == "mps"),
             report_to                   = "none",
@@ -374,6 +467,10 @@ class LlamaService:
         self._stamp_generation_config()
         self.model.eval()
         self._rebuild_pipeline()
+
+        # Task 19 — save version record after successful retrain
+        self.save_model_version({"accuracy": 0.0, "f1": 0.0, "loss": 0.0})
+
         _cb(100, "Pipeline live with newly fine-tuned weights!")
         logger.info(f"Retrain complete — model saved to '{output_dir}'")
 
