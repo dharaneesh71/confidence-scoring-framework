@@ -18,14 +18,12 @@ QUESTIONS = [
     "What is transfer learning?",
 ]
 
-
 def get_token() -> str:
     requests.post(f"{BASE_URL}/api/auth/register",
                   json={"email": TEST_EMAIL, "password": TEST_PASS})
     res = requests.post(f"{BASE_URL}/api/auth/login",
                         data={"username": TEST_EMAIL, "password": TEST_PASS})
     return res.json().get("access_token", "")
-
 
 def run_benchmark():
     print("Starting performance benchmark...\n")
@@ -59,7 +57,6 @@ def run_benchmark():
     print(f"  Max time:  {max(results):.1f}s")
     print(f"  Median:    {statistics.median(results):.1f}s")
     print(f"{'─'*60}")
-
 
 if __name__ == "__main__":
     run_benchmark()

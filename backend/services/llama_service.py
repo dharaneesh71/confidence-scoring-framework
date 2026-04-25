@@ -115,16 +115,14 @@ class LlamaService:
         self.model:      Optional[AutoModelForCausalLM] = None
         self.tokenizer:  Optional[AutoTokenizer]        = None
         self.pipeline                                   = None
-
         self.device         = _resolve_device()
         self.model_name     = settings.LLAMA_MODEL_NAME
         self.finetuned_path = Path("data/finetuned_model")
-
         logger.info(f"LlamaService — device: '{self.device}'")
         self._initialize()
 
     # ------------------------------------------------------------------ #
-    #  Finetuned model check                                              #
+    #  Finetuned model check                                               #
     # ------------------------------------------------------------------ #
 
     def _has_finetuned_model(self) -> bool:
@@ -147,7 +145,6 @@ class LlamaService:
                 login(token=settings.HUGGINGFACE_TOKEN)
                 logger.info("HuggingFace login successful")
 
-            # ✅ FIXED — only use finetuned path if model weights actually exist
             load_path = (
                 str(self.finetuned_path)
                 if self._has_finetuned_model()
@@ -174,12 +171,6 @@ class LlamaService:
             if self.device == "mps":
                 self.model = self.model.to("mps")
 
-            # ── Stamp GenerationConfig ONCE on the model ─────────────────
-            # All generation params live here and nowhere else.
-            # The pipeline call passes ZERO extra kwargs, so there is no
-            # "generation_config + kwargs" merge → warning is gone entirely.
-            #self._stamp_generation_config()
-
             # Disable gradient tracking for inference (~30 % memory saving)
             self.model.eval()
 
@@ -193,24 +184,32 @@ class LlamaService:
 
     def _stamp_generation_config(self) -> None:
         """Apply _GEN_CONFIG onto model.generation_config (single source of truth)."""
+        stop_token_ids = [self.tokenizer.eos_token_id]
+        for special_tok in ["<|eot_id|>", "<|end_of_text|>"]:
+            tok_id = self.tokenizer.convert_tokens_to_ids(special_tok)
+            if tok_id and tok_id != self.tokenizer.unk_token_id:
+                stop_token_ids.append(tok_id)
+        stop_token_ids = list(set(filter(None, stop_token_ids)))
+
         self.model.generation_config = GenerationConfig(
             **self._GEN_CONFIG,
             pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=stop_token_ids,
         )
 
     def _rebuild_pipeline(self) -> None:
-        self._stamp_generation_config()
         """Single source of truth for (re)creating the HF text-generation pipeline."""
+        self._stamp_generation_config()
+        # eos_token_id set in _stamp_generation_config(). Passing stop_strings
+        # to the pipeline forwards them to model.generate() internally, but
+        # the pipeline does not pass its tokenizer to generate(), causing:
+        # ValueError: stop strings ... but we could not locate a tokenizer.
         self.pipeline = pipeline(
             "text-generation",
             model=self.model,
             tokenizer=self.tokenizer,
-            **_pipeline_device_kwargs(self.device)
+            **_pipeline_device_kwargs(self.device),
         )
-
-    # ------------------------------------------------------------------ #
-    #  Task 18 — Hot-Swap & Rollback                                      #
-    # ------------------------------------------------------------------ #
 
     def hot_swap_model(self, new_model_path: str) -> bool:
         """Load a new model in-place without restarting the server."""
@@ -234,7 +233,6 @@ class LlamaService:
                 self.model = self.model.to("mps")
 
             self.model.eval()
-            self._stamp_generation_config()
             self._rebuild_pipeline()
 
             # Free old model memory
@@ -328,11 +326,10 @@ class LlamaService:
     def generate_answer(self, question: str, context: Optional[str] = None) -> str:
         """
         Generate a detailed answer for `question`, optionally grounded in `context`.
-
         Generation parameters are baked into model.generation_config at init
         time via _stamp_generation_config(). The pipeline call passes NO extra
         kwargs, which fully eliminates the HuggingFace deprecation warning:
-          'Passing generation_config together with generation-related arguments'
+        'Passing generation_config together with generation-related arguments'
         """
         if not self.is_ready():
             logger.warning("generate_answer called but model is not loaded")
@@ -352,7 +349,9 @@ class LlamaService:
             else:
                 answer = generated_text
 
-            answer = answer.replace(self._EOT, "").strip()
+            answer = answer.split(self._EOT)[0]
+            answer = answer.strip()
+
             logger.info(f"Generated answer — {len(answer)} chars")
             return answer
 
@@ -407,9 +406,7 @@ class LlamaService:
         total = len(texts)
         _cb(20, f"Formatted {total} samples — tokenising (dynamic padding)…")
 
-        # ── 2. Tokenise — NO static padding ─────────────────────────────
-        # Plain lists returned here; _ChatDataset converts per-item to tensor.
-        # DataCollatorForLanguageModeling applies dynamic padding per batch.
+        # ── 2. Tokenise — NO static padding ──────────────────────────────
         tokenized = self.tokenizer(
             texts,
             truncation=True,
@@ -433,15 +430,15 @@ class LlamaService:
             logging_steps               = 5,
             fp16                        = (self.device == "cuda"),
             bf16                        = False,
-            no_cuda                     = (self.device == "cpu"),
-            use_mps_device              = (self.device == "mps"),
+            # ✅ FIX: use_mps_device is deprecated — replaced with no_cuda
+            no_cuda                     = (self.device != "cuda"),
             report_to                   = "none",
             dataloader_pin_memory       = (self.device == "cuda"),
         )
         _cb(45, "Training arguments configured — starting fine-tuning…")
 
         # ── 4. Train ──────────────────────────────────────────────────────
-        self.model.train()   # switch to train mode for the duration
+        self.model.train()
 
         trainer = Trainer(
             model         = self.model,
@@ -449,26 +446,23 @@ class LlamaService:
             train_dataset = dataset,
             data_collator = DataCollatorForLanguageModeling(
                 tokenizer          = self.tokenizer,
-                mlm                = False,  # causal LM, not masked
-                pad_to_multiple_of = 8,      # tensor-core alignment on CUDA
+                mlm                = False,
+                pad_to_multiple_of = 8,
             ),
         )
         trainer.train()
         _cb(80, "Fine-tuning complete — saving weights…")
 
-        # ── 5. Persist ───────────────────────────────────────────────────
+        # ── 5. Persist ────────────────────────────────────────────────────
         self.model.save_pretrained(output_dir)
         self.tokenizer.save_pretrained(output_dir)
         _cb(90, "Weights saved — restoring inference mode…")
 
         # ── 6. Restore inference state ────────────────────────────────────
-        # save_pretrained() resets model.generation_config to defaults,
-        # so we must re-stamp our custom config before rebuilding pipeline.
         self._stamp_generation_config()
         self.model.eval()
         self._rebuild_pipeline()
 
-        # Task 19 — save version record after successful retrain
         self.save_model_version({"accuracy": 0.0, "f1": 0.0, "loss": 0.0})
 
         _cb(100, "Pipeline live with newly fine-tuned weights!")
