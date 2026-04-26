@@ -1,0 +1,55 @@
+# ============================================================
+# CONFID.AI — docker-compose.yml
+# For LOCAL TESTING ONLY before pushing to the VT registry.
+#
+# Usage:
+#   cp .env.example .env          # fill in your secrets
+#   docker compose up --build
+#
+# Frontend → http://localhost:3000
+# Backend  → http://localhost:8000  (also reachable at /docs)
+# ============================================================
+
+services:
+
+  # ── Backend (FastAPI) ────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: confidai-backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist the SQLite database, ChromaDB vectors, and uploaded PDFs
+      # across container restarts. These directories MUST NOT be in the image.
+      - confidai-db:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s   # LLaMA takes time to load on first start
+
+  # ── Frontend (React → Nginx) ─────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # In local docker-compose the browser reaches the backend at localhost:8000
+        # (backend is port-forwarded above).
+        REACT_APP_API_URL: http://localhost:8000
+    container_name: confidai-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+# ── Named volume — survives docker compose down ──────────────────────────────
+volumes:
+  confidai-db:
+    driver: local

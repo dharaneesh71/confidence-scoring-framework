@@ -13,9 +13,9 @@ TEST_PASS  = "benchpass"
 QUESTIONS = [
     "What is NLP?",
     "Explain machine learning in simple terms.",
-    "What is a neural network?",
-    "How does confidence scoring work?",
-    "What is transfer learning?",
+    "Tell me about hip and knee procedures by age",
+    "What is Human Centered Computing",
+    "What is inflation rate?",
 ]
 
 def get_token() -> str:

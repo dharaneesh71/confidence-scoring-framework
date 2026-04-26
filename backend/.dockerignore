@@ -1,0 +1,66 @@
+# ============================================================
+# .dockerignore  (place at project root AND in backend/)
+# Keeps the Docker build context lean — excludes everything
+# that should never be baked into the image.
+# ============================================================
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+env/
+.venv/
+ENV/
+
+# ── Secrets — MUST never end up in an image ──────────────────────────────────
+.env
+.env.*
+*.key
+*.pem
+
+# ── Test & dev files ──────────────────────────────────────────────────────────
+tests/
+pytest.ini
+*.test.py
+errors.py
+testingfile.py
+verify_setup.py
+
+# ── Large model weights — downloaded at runtime via HuggingFace ──────────────
+*.bin
+*.pth
+*.pt
+*.onnx
+*.safetensors
+data/finetuned_model/
+hf_*/
+
+# ── User data — mounted as volumes at runtime ─────────────────────────────────
+data/chroma_db/
+data/uploads/
+data/*.db
+data/*.sqlite
+
+# ── Output / docs ─────────────────────────────────────────────────────────────
+output/
+docs/
+
+# ── Frontend (not needed in backend image) ────────────────────────────────────
+../frontend/
+
+# ── IDE & OS junk ─────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
