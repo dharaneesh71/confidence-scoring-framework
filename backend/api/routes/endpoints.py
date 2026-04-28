@@ -36,6 +36,9 @@ from services.llama_service import LlamaService
 from services.pdf_processor import PDFProcessor
 from services.scoring_service import ScoringService
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -44,7 +47,7 @@ pdf_processor   = PDFProcessor()
 chroma_service  = ChromaService()
 llama_service   = LlamaService()
 scoring_service = ScoringService()
-
+_inference_executor = ThreadPoolExecutor(max_workers=2)
 # ── Sprint 5: Global training state ───────────────────────────────────────────
 training_status = {
     "status":       "idle",
@@ -163,9 +166,13 @@ async def submit_query(
                 )
 
         # ── Generate answer + score ────────────────────────────────────────
-        answer = llama_service.generate_answer(
-            request.question,
-            context=context_string or None
+        loop = asyncio.get_event_loop()
+        answer = await loop.run_in_executor(
+            _inference_executor,
+            lambda: llama_service.generate_answer(
+                request.question,
+                context=context_string or None
+            )
         )
 
         # Pass domain_filter into ChromaDB search

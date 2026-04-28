@@ -104,10 +104,9 @@ class LlamaService:
     # Stored here so retrain() can re-stamp them after save_pretrained()
     # resets the model's generation_config.
     _GEN_CONFIG = dict(
-        max_new_tokens     = 768,
-        temperature        = 0.7,
-        do_sample          = True,
-        top_p              = 0.9,
+        max_new_tokens     = 384,
+        temperature        = 1.0,
+        do_sample          = False,
         repetition_penalty = 1.1,
     )
 
