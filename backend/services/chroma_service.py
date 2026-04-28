@@ -8,6 +8,7 @@ from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Optional
 import logging
 from core.config import settings
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,19 @@ class ChromaService:
             )
             
             logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-            self.embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
+            for attempt in range(3):
+                try:
+                    self.embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
+                    logger.info("Embedding model loaded successfully")
+                    break
+                except Exception as e:
+                    logger.warning(f"Embedding model load attempt {attempt + 1}/3 failed: {e}")
+                    if attempt < 2:
+                        logger.info("Retrying in 10 seconds...")
+                        time.sleep(10)
+                    else:
+                        logger.error("All 3 attempts failed — raising exception")
+                        raise
             
             self.collection = self.client.get_or_create_collection(
                 name=settings.CHROMA_COLLECTION_NAME,

@@ -131,10 +131,10 @@ async def submit_query(
             if not session_db:
                 raise HTTPException(status_code=404, detail="Session not found")
 
-        # ── Build conversation context ─────────────────────────────────────
+        # ── Build conversation context (last 1 message only for speed) ─────
         past_messages = db.query(ChatHistory).filter(
             ChatHistory.session_id == session_id
-        ).order_by(ChatHistory.timestamp.desc()).limit(2).all()
+        ).order_by(ChatHistory.timestamp.desc()).limit(1).all()
 
         context_string = ""
         if past_messages:
@@ -154,7 +154,7 @@ async def submit_query(
 
             if domain_filenames:
                 # ChromaDB where filter: only match chunks from those files
-                domain_filter = {"document_id": {"$in": domain_filenames}}
+                domain_filter = {"source": {"$in": domain_filenames}}
                 logger.info(
                     f"[Domain Filter] Restricting RAG to domain='{request.domain}' "
                     f"({len(domain_filenames)} docs)"
@@ -165,7 +165,7 @@ async def submit_query(
                     f"Falling back to full search."
                 )
 
-        # ── Generate answer + score ────────────────────────────────────────
+        # ── Generate answer + score (non-blocking via thread pool) ─────────
         loop = asyncio.get_event_loop()
         answer = await loop.run_in_executor(
             _inference_executor,

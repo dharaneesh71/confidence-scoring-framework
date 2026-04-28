@@ -1,22 +1,25 @@
 # ============================================================
 # CONFID.AI — Backend Dockerfile
-# Base: python:3.11-slim
+# Base: python:3.11-slim (Debian/glibc)
 # Entry: uvicorn main:app  (runs from /app)
 # Port:  8000
 # ============================================================
-
 FROM python:3.11-slim
+
 WORKDIR /app
 
 # ── System dependencies ───────────────────────────────────────────────────────
-# gcc/g++ required by chromadb + sentence-transformers native extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ git curl \
+    gcc g++ git curl cmake libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# ── PyTorch CPU-only (separate layer so it caches independently) ──────────────
-# CPU build keeps the image ~3 GB smaller than the CUDA build.
-# The LlamaService._resolve_device() falls back to CPU automatically.
+# ── llama-cpp-python (compiled from source for glibc/Debian) ─────────────────
+# Uses OpenBLAS for faster CPU matrix math
+# NOTE: This step takes 15-20 minutes — Docker caches it after first build
+RUN CMAKE_ARGS="-DLLAMA_BLAS=ON -DLLAMA_BLAS_VENDOR=OpenBLAS" \
+    pip install llama-cpp-python==0.2.90 --no-cache-dir
+
+# ── PyTorch CPU-only ──────────────────────────────────────────────────────────
 RUN pip install --no-cache-dir \
     torch==2.5.0 \
     --index-url https://download.pytorch.org/whl/cpu
@@ -29,9 +32,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # ── Persistent-data directories (overridden by volume mounts at runtime) ──────
-RUN mkdir -p data/chroma_db data/uploads data/finetuned_model
+RUN mkdir -p data/chroma_db data/uploads data/finetuned_model data/gguf_models
 
-# ── Runtime environment defaults (override via .env or docker-compose) ────────
+# ── Runtime environment defaults ──────────────────────────────────────────────
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TOKENIZERS_PARALLELISM=false
