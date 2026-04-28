@@ -134,7 +134,7 @@ async def submit_query(
         # ── Build conversation context ─────────────────────────────────────
         past_messages = db.query(ChatHistory).filter(
             ChatHistory.session_id == session_id
-        ).order_by(ChatHistory.timestamp.desc()).limit(5).all()
+        ).order_by(ChatHistory.timestamp.desc()).limit(2).all()
 
         context_string = ""
         if past_messages:

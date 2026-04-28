@@ -140,6 +140,10 @@ class LlamaService:
 
     def _initialize(self) -> None:
         try:
+            import os
+            torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", 16)))
+            torch.set_num_interop_threads(int(os.environ.get("MKL_NUM_THREADS", 16)))
+            logger.info(f"PyTorch using {torch.get_num_threads()} threads")
             if settings.HUGGINGFACE_TOKEN:
                 login(token=settings.HUGGINGFACE_TOKEN)
                 logger.info("HuggingFace login successful")
