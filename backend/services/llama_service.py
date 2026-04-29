@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class LlamaService:
     """Uses Groq API for fast LLaMA inference (~1-2 seconds per query)."""
 
-    _GROQ_MODEL = "llama-3.2-3b-preview"
+    _GROQ_MODEL = "llama-3.3-70b-versatile"
 
     def __init__(self):
         self._client: Optional[Groq] = None
