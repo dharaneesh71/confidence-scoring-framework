@@ -53,15 +53,15 @@ class LlamaService:
     def _build_messages(self, question: str, context: Optional[str]) -> list:
         if context:
             system = (
-                "You are a precise AI assistant. Answer the question using only the "
-                "given context. Be direct, factual, and concise (2-4 sentences). "
-                "If the context does not contain the answer, say so briefly."
+                    "You are a knowledgeable AI assistant. Answer the question using only the "
+                    "given context. Provide a thorough, well-structured answer covering all "
+                    "relevant details from the context. Use as much detail as needed."
             )
             user = f"Context:\n{context}\n\nQuestion: {question}"
         else:
             system = (
                 "You are a precise AI assistant. Give a clear, focused answer in "
-                "2-4 sentences. Be direct and concise. Avoid filler or repetition."
+                "5-10 sentences. Be direct and concise. Avoid filler or repetition."
             )
             user = question
 
