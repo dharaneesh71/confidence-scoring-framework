@@ -157,7 +157,7 @@ async def submit_query(
         # so the LLM can use them as grounded context.
         retrieved_passages = chroma_service.search(
             request.question,
-            top_k=3,
+            top_k=6,
             where=domain_filter
         )
 

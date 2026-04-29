@@ -81,7 +81,7 @@ class LlamaService:
             response = self._client.chat.completions.create(
                 model       = self._GROQ_MODEL,
                 messages    = messages,
-                max_tokens  = 200,
+                max_tokens  = 512,
                 temperature = 0.0,
             )
             answer = response.choices[0].message.content.strip()
