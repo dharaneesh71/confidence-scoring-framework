@@ -1,6 +1,7 @@
 """
-Llama Language Model Service — llama-cpp-python (GGUF quantized, CPU optimised)
-~3-4x faster than HuggingFace transformers on CPU inference.
+Llama Language Model Service — Groq API
+~1-2 second inference via Groq's hosted LLaMA-3.2-3B
+No local model loading, no RAM overhead, no OOMKills.
 """
 
 import logging
@@ -8,122 +9,96 @@ import os
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from huggingface_hub import hf_hub_download, login
-from llama_cpp import Llama
+from groq import Groq
+from huggingface_hub import login
 
 from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_GGUF_REPO    = "bartowski/Llama-3.2-3B-Instruct-GGUF"
-_GGUF_FILE    = "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
-_GGUF_CACHE   = Path("data/gguf_models")
-
-_ASSISTANT_HEADER = "<|start_header_id|>assistant<|end_header_id|>\n\n"
-_EOT              = "<|eot_id|>"
-
-
+ 
 class LlamaService:
-    _GEN_CONFIG = dict(
-        max_tokens     = 200,
-        stop           = [_EOT, "<|end_of_text|>"],
-        echo           = False,
-        repeat_penalty = 1.1,
-        temperature    = 0.0,
-    )
+    """Uses Groq API for fast LLaMA inference (~1-2 seconds per query)."""
+
+    _GROQ_MODEL = "llama-3.2-3b-preview"
 
     def __init__(self):
-        self.model: Optional[Llama] = None
+        self._client: Optional[Groq] = None
         self.model_name = settings.LLAMA_MODEL_NAME
-        logger.info("LlamaService (llama-cpp) — initialising")
+        self.finetuned_path = Path("data/finetuned_model")
+        logger.info("LlamaService (Groq API) — initialising")
         self._initialize()
 
     def _initialize(self) -> None:
         try:
-            n_threads = int(os.environ.get("OMP_NUM_THREADS", 16))
-            logger.info(f"llama-cpp using {n_threads} CPU threads")
+            api_key = os.environ.get("GROQ_API_KEY", "")
+            if not api_key:
+                logger.error("GROQ_API_KEY environment variable not set!")
+                return
+
+            self._client = Groq(api_key=api_key)
+            logger.info(f"Groq client initialised — model: {self._GROQ_MODEL}")
 
             if settings.HUGGINGFACE_TOKEN:
-                login(token=settings.HUGGINGFACE_TOKEN)
-                logger.info("HuggingFace login successful")
-
-            _GGUF_CACHE.mkdir(parents=True, exist_ok=True)
-            local_path = _GGUF_CACHE / _GGUF_FILE
-
-            if not local_path.exists():
-                logger.info(f"Downloading GGUF model: {_GGUF_FILE} ...")
-                hf_hub_download(
-                    repo_id   = _GGUF_REPO,
-                    filename  = _GGUF_FILE,
-                    token     = settings.HUGGINGFACE_TOKEN,
-                    local_dir = str(_GGUF_CACHE),
-                )
-            else:
-                logger.info(f"GGUF model found in cache: {local_path}")
-
-            self.model = Llama(
-                model_path   = str(local_path),
-                n_ctx        = 2048,
-                n_threads    = n_threads,
-                n_gpu_layers = 0,
-                verbose      = False,
-            )
-            logger.info("LlamaService (llama-cpp) initialised successfully")
+                try:
+                    login(token=settings.HUGGINGFACE_TOKEN)
+                    logger.info("HuggingFace login successful")
+                except Exception:
+                    logger.warning("HuggingFace login failed — not needed for Groq")
 
         except Exception:
-            logger.exception("Failed to initialise LlamaService")
-            self.model = None
+            logger.exception("Failed to initialise LlamaService (Groq)")
+            self._client = None
 
-    def _build_prompt(self, question: str, context: Optional[str]) -> str:
+    def _build_messages(self, question: str, context: Optional[str]) -> list:
         if context:
-            user_text   = f"Context:\n{context}\n\nQuestion: {question}"
-            system_text = (
+            system = (
                 "You are a precise AI assistant. Answer the question using only the "
                 "given context. Be direct, factual, and concise (2-4 sentences). "
                 "If the context does not contain the answer, say so briefly."
             )
+            user = f"Context:\n{context}\n\nQuestion: {question}"
         else:
-            user_text   = question
-            system_text = (
+            system = (
                 "You are a precise AI assistant. Give a clear, focused answer in "
                 "2-4 sentences. Be direct and concise. Avoid filler or repetition."
             )
-        return (
-            f"<|start_header_id|>system<|end_header_id|>\n\n"
-            f"{system_text}{_EOT}\n"
-            f"<|start_header_id|>user<|end_header_id|>\n\n"
-            f"{user_text}{_EOT}\n"
-            f"{_ASSISTANT_HEADER}"
-        )
+            user = question
+
+        return [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user},
+        ]
 
     def generate_answer(self, question: str, context: Optional[str] = None) -> str:
         if not self.is_ready():
-            return "Model not loaded."
-        prompt = self._build_prompt(question, context)
+            logger.warning("Groq client not initialised — check GROQ_API_KEY")
+            return "Model not available. Please check API configuration."
+
+        messages = self._build_messages(question, context)
+
         try:
-            response = self.model(prompt, **self._GEN_CONFIG)
-            answer   = response["choices"][0]["text"].strip()
-            for tok in [_EOT, "<|end_of_text|>"]:
-                answer = answer.replace(tok, "").strip()
-            logger.info(f"Generated answer — {len(answer)} chars")
+            response = self._client.chat.completions.create(
+                model       = self._GROQ_MODEL,
+                messages    = messages,
+                max_tokens  = 200,
+                temperature = 0.0,
+            )
+            answer = response.choices[0].message.content.strip()
+            logger.info(f"Generated answer (Groq) — {len(answer)} chars")
             return answer
+
         except Exception:
-            logger.exception("Error in generate_answer")
+            logger.exception("Groq API error in generate_answer")
             return "Error generating answer."
 
     def hot_swap_model(self, new_model_path: str) -> bool:
-        old_model = self.model
-        try:
-            n_threads  = int(os.environ.get("OMP_NUM_THREADS", 16))
-            self.model = Llama(model_path=new_model_path, n_ctx=2048, n_threads=n_threads, n_gpu_layers=0, verbose=False)
-            del old_model
-            return True
-        except Exception:
-            self.model = old_model
-            return False
+        logger.info(f"[HotSwap] Groq uses hosted model, ignoring path '{new_model_path}'")
+        return True
 
     def rollback_model(self, backup_path: str) -> bool:
-        return self.hot_swap_model(backup_path)
+        logger.info(f"[Rollback] Groq uses hosted model, ignoring path '{backup_path}'")
+        return True
 
     def save_model_version(self, metrics: dict) -> None:
         import json
@@ -135,15 +110,23 @@ class LlamaService:
                 history = json.loads(history_path.read_text())
             except Exception:
                 history = []
-        history.append({"version": f"v{len(history)+1}", "timestamp": datetime.now().isoformat(),
-                        "accuracy": round(metrics.get("accuracy",0),4), "f1_score": round(metrics.get("f1",0),4),
-                        "loss": round(metrics.get("loss",0),4), "path": _GGUF_FILE})
+        history.append({
+            "version":   f"v{len(history) + 1}",
+            "timestamp": datetime.now().isoformat(),
+            "accuracy":  round(metrics.get("accuracy", 0), 4),
+            "f1_score":  round(metrics.get("f1", 0), 4),
+            "loss":      round(metrics.get("loss", 0), 4),
+            "path":      f"groq:{self._GROQ_MODEL}",
+        })
         history_path.write_text(json.dumps(history, indent=2))
+        logger.info(f"[ModelHistory] Saved version v{len(history)}")
 
     def retrain(self, gold_data, hard_data, status_callback=None) -> None:
-        if status_callback:
-            status_callback(0,  "llama-cpp does not support fine-tuning.")
-            status_callback(100,"Retrain skipped.")
+        def _cb(p, m):
+            logger.info(f"[Retrain {p:3d}%] {m}")
+            if status_callback: status_callback(p, m)
+        _cb(0,   "Groq API does not support fine-tuning.")
+        _cb(100, "Retrain skipped.")
 
     def is_ready(self) -> bool:
-        return self.model is not None
+        return self._client is not None
