@@ -37,7 +37,7 @@ class ScoringService:
         """
         penalty = 1.0
 
-        # 1. Leaked stop tokens — only penalise if many present
+    # 1. Leaked stop tokens — only penalise if many present
         bad_tokens = ["<|start_header_id|>", "<|eot_id|>", "<|end_of_text|>"]
         leaked = sum(answer.count(t) for t in bad_tokens)
         if leaked > 3:
