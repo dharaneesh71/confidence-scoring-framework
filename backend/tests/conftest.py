@@ -82,11 +82,12 @@ def mock_heavy_services():
     mock_chroma  = MagicMock()
     mock_scoring = MagicMock()
 
-    mock_llama.is_ready.return_value   = True
-    mock_chroma.is_ready.return_value  = True
-    mock_chroma.get_count.return_value = 0
-    mock_chroma.search.return_value    = []
-    mock_llama.generate_answer.return_value = "Mock answer"
+    mock_llama.is_ready.return_value              = True
+    mock_chroma.is_ready.return_value             = True
+    mock_chroma.get_count.return_value            = 0
+    mock_chroma.search.return_value               = []
+    mock_chroma.search_with_rerank.return_value   = []   # ← pre-flight returns empty by default
+    mock_llama.generate_answer.return_value       = "Mock answer"
     mock_scoring.compute_confidence_score.return_value = (0.9, "Mock explanation", [], {})
 
     with patch("api.routes.endpoints.llama_service",   mock_llama), \

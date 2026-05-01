@@ -49,10 +49,15 @@ class TestLlamaServiceGenerate:
         mock_client.chat.completions.create.return_value.choices[0].message.content = (
             "AI is artificial intelligence."
         )
-        svc._client    = mock_client
+        svc._client     = mock_client
         svc._GROQ_MODEL = "llama-3.3-70b-versatile"
 
-        result = svc.generate_answer("What is AI?")
+        # Must pass a context string — generate_answer returns NOT_FOUND_MSG
+        # immediately when context is None (no Groq call in that case).
+        result = svc.generate_answer(
+            "What is AI?",
+            context="AI stands for Artificial Intelligence.",
+        )
         assert result == "AI is artificial intelligence."
         mock_client.chat.completions.create.assert_called_once()
 

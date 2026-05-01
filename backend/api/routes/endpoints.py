@@ -172,52 +172,68 @@ async def submit_query(
             else:
                 logger.warning(f"[Domain Filter] No documents found for domain='{request.domain}'. Falling back to full search.")
 
-        # ── STEP 1: RAG retrieval FIRST ────────────────────────────────────
-        # Retrieve relevant document chunks BEFORE generating the answer
-        # so the LLM can use them as grounded context.
-        retrieved_passages = chroma_service.search(
+        # ── STEP 1: RAG retrieval with reranking ───────────────────────────
+        # Retrieve candidates (up to top-20 internally), then rerank with
+        # the cross-encoder if available, returning top_k final results.
+        retrieved_passages = chroma_service.search_with_rerank(
             request.question,
             top_k=settings.TOP_K_RETRIEVAL,
-            where=domain_filter
+            where=domain_filter,
         )
 
-        # ── STEP 2: Build RAG context from retrieved passages ──────────────
-        rag_context = ""
-        if retrieved_passages:
-            rag_context = "\n\n---\n\n".join([p["text"] for p in retrieved_passages])
-            logger.info(f"[RAG] Retrieved {len(retrieved_passages)} passages for grounding")
-
-        # ── STEP 3: Generate answer WITH document context ──────────────────
-        # Priority: RAG context > conversation history > no context
-        final_context = rag_context or conversation_context or None
-
-        loop   = asyncio.get_event_loop()
-        answer = await loop.run_in_executor(
-            _inference_executor,
-            lambda: llama_service.generate_answer(
-                request.question,
-                context=final_context
+        # ── PRE-FLIGHT: similarity threshold check ─────────────────────────
+        # If no passages were found OR the best match is below 0.45 cosine
+        # similarity, the question is off-topic for the knowledge base.
+        # Skip the LLM entirely and return a grounded not-found response.
+        max_sim = max(
+            (p["similarity_score"] for p in retrieved_passages), default=0.0
+        )
+        if not retrieved_passages or max_sim < 0.45:
+            logger.info(
+                "[PreFlight] Blocked — passages=%d, max_sim=%.3f",
+                len(retrieved_passages), max_sim,
             )
-        )
-
-        # ── STEP 4: Score answer against retrieved passages ────────────────
-        if not retrieved_passages:
+            answer           = (
+                "I cannot find relevant information about this topic "
+                "in the knowledge base."
+            )
             confidence_score = 0.0
-            confidence_label = "Unverified - No Data"
-            explanation      = "No documents found to verify."
+            confidence_label = "Unverified - Not in Knowledge Base"
+            explanation      = (
+                "No documents with sufficient similarity were found for this query."
+            )
             citations        = []
             score_breakdown  = {
                 "consistency":  0,
                 "semantic":     0,
                 "completeness": 0,
-                "precision":    0
+                "precision":    0,
             }
         else:
+            # ── STEP 2: Build RAG context ──────────────────────────────────
+            rag_context = "\n\n---\n\n".join(p["text"] for p in retrieved_passages)
+            logger.info("[RAG] Retrieved %d passages for grounding", len(retrieved_passages))
+
+            # ── STEP 3: Generate grounded answer ──────────────────────────
+            # LlamaService.generate_answer returns NOT_FOUND_MSG when context
+            # is None; here it's always set from rag_context.
+            final_context = rag_context or conversation_context or None
+
+            loop   = asyncio.get_event_loop()
+            answer = await loop.run_in_executor(
+                _inference_executor,
+                lambda: llama_service.generate_answer(
+                    request.question,
+                    context=final_context,
+                ),
+            )
+
+            # ── STEP 4: Score answer against retrieved passages ────────────
             confidence_score, explanation, citations, score_breakdown = (
                 scoring_service.compute_confidence_score(
                     answer=answer,
                     question=request.question,
-                    retrieved_passages=retrieved_passages
+                    retrieved_passages=retrieved_passages,
                 )
             )
             if confidence_score >= settings.HIGH_CONFIDENCE_THRESHOLD:

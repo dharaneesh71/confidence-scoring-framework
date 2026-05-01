@@ -50,27 +50,33 @@ class LlamaService:
             logger.exception("Failed to initialise LlamaService (Groq)")
             self._client = None
 
-    def _build_messages(self, question: str, context: Optional[str]) -> list:
-        if context:
-            system = (
-                    "You are a knowledgeable AI assistant. Answer the question using only the "
-                    "given context. Provide a thorough, well-structured answer covering all "
-                    "relevant details from the context. Use as much detail as needed."
-            )
-            user = f"Context:\n{context}\n\nQuestion: {question}"
-        else:
-            system = (
-                "You are a precise AI assistant. Give a clear, focused answer in "
-                "5-10 sentences. Be direct and concise. Avoid filler or repetition."
-            )
-            user = question
+    # Canonical not-found message returned whenever grounding fails.
+    NOT_FOUND_MSG = (
+        "I cannot find information about this in the provided documents."
+    )
 
+    def _build_messages(self, question: str, context: Optional[str]) -> list:
+        system = (
+            "You are a precise AI assistant grounded strictly in the provided documents. "
+            "Answer the user's question using ONLY the information explicitly stated in the "
+            "context below. Do NOT use your training knowledge, make inferences, or fill in "
+            "gaps beyond what the context says. "
+            "If the answer is not present in the context, respond with exactly: "
+            f'"{self.NOT_FOUND_MSG}"'
+        )
+        user = f"Context:\n{context}\n\nQuestion: {question}"
         return [
             {"role": "system", "content": system},
             {"role": "user",   "content": user},
         ]
 
     def generate_answer(self, question: str, context: Optional[str] = None) -> str:
+        if context is None:
+            logger.info(
+                "[LLM] No context provided — returning not-found message without API call"
+            )
+            return self.NOT_FOUND_MSG
+
         if not self.is_ready():
             logger.warning("Groq client not initialised — check GROQ_API_KEY")
             return "Model not available. Please check API configuration."

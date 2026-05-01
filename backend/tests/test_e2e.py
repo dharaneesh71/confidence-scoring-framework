@@ -18,8 +18,9 @@ def test_full_pipeline_chat_to_feedback(client):
     with patch("api.routes.endpoints.llama_service.generate_answer",
                return_value="NLP stands for Natural Language Processing."), \
          patch("api.routes.endpoints.llama_service.is_ready", return_value=True), \
-         patch("api.routes.endpoints.chroma_service.search", return_value=[
-             {"text": "NLP is a field of AI.", "source": "doc.pdf", "similarity_score": 0.9}
+         patch("api.routes.endpoints.chroma_service.search_with_rerank", return_value=[
+             {"text": "NLP is a field of AI.", "source": "doc.pdf",
+              "similarity_score": 0.9, "metadata": {}, "page": 0}
          ]):
         r1 = client.post("/api/query",
                          json={"question": "What is NLP?", "domain": "General"},
