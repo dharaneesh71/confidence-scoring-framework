@@ -37,7 +37,9 @@ from services.pdf_processor import PDFProcessor
 from services.scoring_service import ScoringService
 
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path as _Path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -49,7 +51,12 @@ llama_service       = LlamaService()
 scoring_service     = ScoringService()
 _inference_executor = ThreadPoolExecutor(max_workers=2)
 
-# ── Sprint 5: Global training state ───────────────────────────────────────────
+# ── Sprint 5: Thread-safe training state ──────────────────────────────────────
+# _run_retraining_job is a sync function that FastAPI runs in a thread-pool,
+# so we protect the shared status dict with a threading.Lock rather than an
+# asyncio primitive (which cannot be awaited from sync code).
+_training_lock = threading.Lock()
+
 training_status = {
     "status":       "idle",
     "progress":     0,
@@ -57,6 +64,19 @@ training_status = {
     "started_at":   None,
     "completed_at": None,
 }
+
+# Absolute path for model_history.json
+# endpoints.py lives at  backend/api/routes/endpoints.py
+# .parent × 3 → backend/
+_MODEL_HISTORY_PATH = (
+    _Path(__file__).resolve().parent.parent.parent / "data" / "model_history.json"
+)
+
+
+def _update_training_status(**kwargs: object) -> None:
+    """Thread-safe update of the global training_status dict."""
+    with _training_lock:
+        training_status.update(kwargs)
 
 
 # ==========================================
@@ -157,7 +177,7 @@ async def submit_query(
         # so the LLM can use them as grounded context.
         retrieved_passages = chroma_service.search(
             request.question,
-            top_k=6,
+            top_k=settings.TOP_K_RETRIEVAL,
             where=domain_filter
         )
 
@@ -494,57 +514,86 @@ async def trigger_retraining(
     current_user:     User    = Depends(get_current_active_admin),
     db:               Session = Depends(get_db)
 ):
-    global training_status
+    # Atomically check-and-set under the lock to prevent duplicate jobs.
+    with _training_lock:
+        if training_status["status"] == "running":
+            raise HTTPException(status_code=409, detail="A training job is already running.")
 
-    if training_status["status"] == "running":
-        raise HTTPException(status_code=409, detail="A training job is already running.")
+        gold_rows = (
+            db.query(ChatHistory)
+            .join(Feedback, Feedback.chat_history_id == ChatHistory.id)
+            .filter(ChatHistory.confidence_score >= settings.HIGH_CONFIDENCE_THRESHOLD)
+            .filter(Feedback.rating >= 4)
+            .limit(500).all()
+        )
+        hard_rows = (
+            db.query(ChatHistory)
+            .join(Feedback, Feedback.chat_history_id == ChatHistory.id)
+            .filter(Feedback.rating <= 2)
+            .limit(500).all()
+        )
 
-    gold_rows = (
-        db.query(ChatHistory)
-        .join(Feedback, Feedback.chat_history_id == ChatHistory.id)
-        .filter(ChatHistory.confidence_score >= settings.HIGH_CONFIDENCE_THRESHOLD)
-        .filter(Feedback.rating >= 4)
-        .limit(500).all()
-    )
-    hard_rows = (
-        db.query(ChatHistory)
-        .join(Feedback, Feedback.chat_history_id == ChatHistory.id)
-        .filter(Feedback.rating <= 2)
-        .limit(500).all()
-    )
+        if not gold_rows and not hard_rows:
+            raise HTTPException(
+                status_code=400,
+                detail="Not enough labelled data to start training."
+            )
 
-    if not gold_rows and not hard_rows:
-        raise HTTPException(status_code=400, detail="Not enough labelled data to start training.")
+        def row_to_dict(r):
+            return {
+                "question":         r.question,
+                "answer":           r.answer,
+                "confidence_score": r.confidence_score,
+            }
 
-    def row_to_dict(r): return {"question": r.question, "answer": r.answer, "confidence_score": r.confidence_score}
+        gold_data = [row_to_dict(r) for r in gold_rows]
+        hard_data = [row_to_dict(r) for r in hard_rows]
 
-    gold_data = [row_to_dict(r) for r in gold_rows]
-    hard_data = [row_to_dict(r) for r in hard_rows]
-
-    training_status.update({
-        "status": "running", "progress": 0,
-        "message": f"Starting — {len(gold_data)} gold samples, {len(hard_data)} hard negatives.",
-        "started_at": datetime.now().isoformat(), "completed_at": None,
-    })
+        training_status.update({
+            "status":       "running",
+            "progress":     0,
+            "message":      (
+                f"Starting — {len(gold_data)} gold samples, "
+                f"{len(hard_data)} hard negatives."
+            ),
+            "started_at":   datetime.now().isoformat(),
+            "completed_at": None,
+        })
 
     background_tasks.add_task(_run_retraining_job, gold_data, hard_data)
-    return {"message": "Retraining job started successfully.", "triggered_by": current_user.email, "gold_count": len(gold_data), "hard_count": len(hard_data)}
+    return {
+        "message":      "Retraining job started successfully.",
+        "triggered_by": current_user.email,
+        "gold_count":   len(gold_data),
+        "hard_count":   len(hard_data),
+    }
 
 
-def _run_retraining_job(gold_list: list, hard_list: list):
-    global training_status
+def _run_retraining_job(gold_list: list, hard_list: list) -> None:
     try:
-        training_status.update({"progress": 10, "message": "Formatting training data..."})
-        llama_service.retrain(gold_data=gold_list, hard_data=hard_list, status_callback=_update_training_progress)
-        training_status.update({"status": "completed", "progress": 100, "message": "Training complete!", "completed_at": datetime.now().isoformat()})
+        _update_training_status(progress=10, message="Pipeline starting…")
+        llama_service.retrain(
+            gold_data=gold_list,
+            hard_data=hard_list,
+            status_callback=_update_training_progress,
+        )
+        _update_training_status(
+            status="completed",
+            progress=100,
+            message="Training complete!",
+            completed_at=datetime.now().isoformat(),
+        )
     except Exception as e:
-        logger.error(f"Retraining job failed: {e}", exc_info=True)
-        training_status.update({"status": "failed", "message": f"Training failed: {str(e)}"})
+        logger.error("Retraining job failed: %s", e, exc_info=True)
+        _update_training_status(
+            status="failed",
+            message=f"Training failed: {str(e)}",
+        )
 
 
-def _update_training_progress(progress: int, message: str):
-    global training_status
-    training_status.update({"progress": progress, "message": message})
+def _update_training_progress(progress: int, message: str) -> None:
+    """Callback passed into LlamaService.retrain() for per-step updates."""
+    _update_training_status(progress=progress, message=message)
 
 
 @router.get("/admin/training-status")
@@ -577,11 +626,10 @@ def deploy_model(request: DeployModelRequest, current_user: User = Depends(get_c
 
 @router.get("/admin/model-history")
 def get_model_history(current_user: User = Depends(get_current_active_admin)):
-    history_path = Path("data/model_history.json")
-    if not history_path.exists():
+    if not _MODEL_HISTORY_PATH.exists():
         return {"history": []}
     try:
-        return {"history": json.loads(history_path.read_text())}
+        return {"history": json.loads(_MODEL_HISTORY_PATH.read_text())}
     except Exception:
         return {"history": []}
 

@@ -103,7 +103,8 @@ class LlamaService:
     def save_model_version(self, metrics: dict) -> None:
         import json
         from datetime import datetime
-        history_path = Path("data/model_history.json")
+        # Absolute path: backend/services/../data/model_history.json
+        history_path = Path(__file__).resolve().parent.parent / "data" / "model_history.json"
         history: list = []
         if history_path.exists():
             try:
@@ -121,12 +122,28 @@ class LlamaService:
         history_path.write_text(json.dumps(history, indent=2))
         logger.info(f"[ModelHistory] Saved version v{len(history)}")
 
-    def retrain(self, gold_data, hard_data, status_callback=None) -> None:
-        def _cb(p, m):
-            logger.info(f"[Retrain {p:3d}%] {m}")
-            if status_callback: status_callback(p, m)
-        _cb(0,   "Groq API does not support fine-tuning.")
-        _cb(100, "Retrain skipped.")
+    def retrain(self, gold_data, hard_data, status_callback=None) -> dict:
+        """
+        Orchestrate the full retraining pipeline via RetrainingService,
+        then persist the resulting metrics as a model-version record.
+
+        Returns the metrics dict (accuracy, f1, loss).
+        """
+        from services.retraining_service import RetrainingService
+
+        def _cb(p: int, m: str) -> None:
+            logger.info("[Retrain %3d%%] %s", p, m)
+            if status_callback:
+                status_callback(p, m)
+
+        service = RetrainingService()
+        metrics = service.run(
+            gold_data=gold_data,
+            hard_data=hard_data,
+            status_callback=_cb,
+        )
+        self.save_model_version(metrics)
+        return metrics
 
     def is_ready(self) -> bool:
         return self._client is not None
