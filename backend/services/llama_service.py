@@ -5,9 +5,10 @@ No local model loading, no RAM overhead, no OOMKills.
 """
 
 import logging
-import os
+import json
+from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Optional
 
 from groq import Groq
 from huggingface_hub import login
@@ -16,7 +17,7 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
- 
+
 class LlamaService:
     """Uses Groq API for fast LLaMA inference (~1-2 seconds per query)."""
 
@@ -31,9 +32,9 @@ class LlamaService:
 
     def _initialize(self) -> None:
         try:
-            api_key = os.environ.get("GROQ_API_KEY", "")
+            api_key = settings.GROQ_API_KEY  # ✅ use settings, not os.environ
             if not api_key:
-                logger.error("GROQ_API_KEY environment variable not set!")
+                logger.error("GROQ_API_KEY is not set — check your .env file!")
                 return
 
             self._client = Groq(api_key=api_key)
@@ -78,7 +79,7 @@ class LlamaService:
             return self.NOT_FOUND_MSG
 
         if not self.is_ready():
-            logger.warning("Groq client not initialised — check GROQ_API_KEY")
+            logger.warning("Groq client not initialised — check GROQ_API_KEY in .env")
             return "Model not available. Please check API configuration."
 
         messages = self._build_messages(question, context)
@@ -107,9 +108,7 @@ class LlamaService:
         return True
 
     def save_model_version(self, metrics: dict) -> None:
-        import json
-        from datetime import datetime
-        history_path = Path("data/model_history.json")
+        history_path = Path(__file__).resolve().parent.parent / "data" / "model_history.json"
         history: list = []
         if history_path.exists():
             try:
@@ -127,12 +126,28 @@ class LlamaService:
         history_path.write_text(json.dumps(history, indent=2))
         logger.info(f"[ModelHistory] Saved version v{len(history)}")
 
-    def retrain(self, gold_data, hard_data, status_callback=None) -> None:
-        def _cb(p, m):
-            logger.info(f"[Retrain {p:3d}%] {m}")
-            if status_callback: status_callback(p, m)
-        _cb(0,   "Groq API does not support fine-tuning.")
-        _cb(100, "Retrain skipped.")
+    def retrain(self, gold_data, hard_data, status_callback=None) -> dict:
+        """
+        Orchestrate the full retraining pipeline via RetrainingService,
+        then persist the resulting metrics as a model-version record.
+
+        Returns the metrics dict (accuracy, f1, loss).
+        """
+        from services.retraining_service import RetrainingService
+
+        def _cb(p: int, m: str) -> None:
+            logger.info("[Retrain %3d%%] %s", p, m)
+            if status_callback:
+                status_callback(p, m)
+
+        service = RetrainingService()
+        metrics = service.run(
+            gold_data=gold_data,
+            hard_data=hard_data,
+            status_callback=_cb,
+        )
+        self.save_model_version(metrics)
+        return metrics
 
     def is_ready(self) -> bool:
         return self._client is not None

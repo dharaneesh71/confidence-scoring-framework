@@ -1,12 +1,28 @@
-"""Unit tests for validation scripts and model version logic."""
+"""
+Unit tests for LlamaService (Groq-based) and ScoringService.
+
+All HuggingFace-specific tests (model, tokenizer, pipeline,
+_has_finetuned_model) have been removed; they targeted a previous
+local-model implementation that was replaced by the Groq API.
+"""
+import json
 import pytest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-def test_has_finetuned_model_false_when_folder_missing(tmp_path):
-    from services.llama_service import LlamaService
-    svc = LlamaService.__new__(LlamaService)
-    svc.finetuned_path = tmp_path / "nonexistent"
-    assert svc._has_finetuned_model() is False
+
+# ============================================================
+# LlamaService — Groq-based
+# ============================================================
+
+class TestLlamaServiceReady:
+    """is_ready() reflects whether the Groq client was initialised."""
+
+    def test_is_ready_false_when_client_is_none(self):
+        from services.llama_service import LlamaService
+        svc = LlamaService.__new__(LlamaService)
+        svc._client = None
+        assert svc.is_ready() is False
 
     def test_is_ready_true_when_client_is_set(self):
         from services.llama_service import LlamaService
@@ -33,10 +49,15 @@ class TestLlamaServiceGenerate:
         mock_client.chat.completions.create.return_value.choices[0].message.content = (
             "AI is artificial intelligence."
         )
-        svc._client    = mock_client
+        svc._client     = mock_client
         svc._GROQ_MODEL = "llama-3.3-70b-versatile"
 
-        result = svc.generate_answer("What is AI?")
+        # Must pass a context string — generate_answer returns NOT_FOUND_MSG
+        # immediately when context is None (no Groq call in that case).
+        result = svc.generate_answer(
+            "What is AI?",
+            context="AI stands for Artificial Intelligence.",
+        )
         assert result == "AI is artificial intelligence."
         mock_client.chat.completions.create.assert_called_once()
 
