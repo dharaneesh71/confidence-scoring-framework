@@ -2,26 +2,25 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
-  Container, Paper, TextField, Button, Typography, Box, Alert, CircularProgress
+  Paper, TextField, Button, Typography, Box, Alert, CircularProgress,
+  useTheme  // ✅ CHANGED: added useTheme
 } from '@mui/material';
+import StarBackground from '../components/Starbackground';
 
-// ── Same pattern used in QAPage / AdminPage / AuthContext ─────────────────────
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 export default function LoginPage() {
-  const [email, setEmail]         = useState('');
-  const [password, setPassword]   = useState('');
-  const [error, setError]         = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [mode, setMode] = useState('login');
+  const [confirm, setConfirm] = useState('');
 
-  // ── NEW: register-mode state ──────────────────────────────────────────────
-  const [mode, setMode]       = useState('login');   // 'login' | 'register'
-  const [confirm, setConfirm] = useState('');        // confirm-password field
+  const { login } = useAuth();
+  const navigate = useNavigate();
+  const theme = useTheme(); // ✅ CHANGED: get theme for mode detection
 
-  const { login }  = useAuth();
-  const navigate   = useNavigate();
-
-  // ── Existing login handler (unchanged) ───────────────────────────────────
   const handleLogin = async (e) => {
     if (e) e.preventDefault();
     setError('');
@@ -38,12 +37,9 @@ export default function LoginPage() {
     }
   };
 
-  // ── NEW: register handler ─────────────────────────────────────────────────
   const handleRegister = async (e) => {
     if (e) e.preventDefault();
     setError('');
-
-    // Client-side validation
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       setError('Please enter a valid email address.');
       return;
@@ -56,7 +52,6 @@ export default function LoginPage() {
       setError('Passwords do not match.');
       return;
     }
-
     setSubmitting(true);
     try {
       const res = await fetch(`${API_BASE}/api/auth/register`, {
@@ -64,23 +59,16 @@ export default function LoginPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-
-      if (res.status === 400) {
-        setError('An account with this email already exists.');
-        return;
-      }
+      if (res.status === 400) { setError('An account with this email already exists.'); return; }
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setError(data.detail || 'Registration failed. Please try again.');
         return;
       }
-
-      // Auto-login after successful registration
       const success = await login(email, password);
       if (success) {
         navigate('/');
       } else {
-        // Account created but auto-login failed — send them to sign-in
         setMode('login');
         setError('Account created! Please sign in.');
       }
@@ -91,111 +79,115 @@ export default function LoginPage() {
     }
   };
 
-  // ── NEW: switch modes and reset fields ────────────────────────────────────
   const switchMode = () => {
     setMode(prev => prev === 'login' ? 'register' : 'login');
     setError('');
     setConfirm('');
   };
 
-  // ── Derived: which handler to call on form submit ─────────────────────────
   const handleSubmit = mode === 'login' ? handleLogin : handleRegister;
 
   return (
-    <Container maxWidth="xs" sx={{ mt: 15 }}>
-      <Paper sx={{
-        p: 4,
+    <Box
+      sx={{
+        position: 'fixed',
+        inset: 0,
         display: 'flex',
-        flexDirection: 'column',
         alignItems: 'center',
-        gap: 2
-      }}>
-        <Typography variant="h4" fontWeight="bold" color="primary">
+        justifyContent: 'center',
+        px: 2,
+      }}
+    >
+      {/* ✅ CHANGED: pass theme mode so stars/bg match dark or light */}
+      <StarBackground mode={theme.palette.mode} />
+
+      <Paper
+        elevation={6}
+        component="form"
+        onSubmit={handleSubmit}
+        sx={{
+          position: 'relative',
+          zIndex: 1,
+          width: '100%',
+          maxWidth: 420,
+          p: 4,
+          borderRadius: 3,
+          bgcolor: theme.palette.mode === 'dark'
+            ? 'rgba(10, 14, 26, 0.85)'
+            : 'rgba(255,255,255,0.88)',
+          backdropFilter: 'blur(12px)',
+          border: `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'}`,
+          boxShadow: '0 8px 40px rgba(0,0,0,0.5)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 2,
+        }}
+      >
+        <Typography variant="h4" fontWeight="bold" textAlign="center" color="primary">
           Confid.AI
         </Typography>
-
-        {/* ── Subtitle changes based on mode ─────────────────────────────── */}
-        <Typography variant="body2" color="text.secondary">
+        <Typography variant="body2" textAlign="center" color="text.secondary" mb={1}>
           {mode === 'login' ? 'Sign in to access the system' : 'Create a new account'}
         </Typography>
 
-        {error && (
-          <Alert severity="error" sx={{ width: '100%' }}>{error}</Alert>
+        {error && <Alert severity="error">{error}</Alert>}
+
+        <TextField
+          label="Email"
+          type="email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          disabled={submitting}
+          fullWidth
+          required
+          autoComplete="email"
+        />
+        <TextField
+          label="Password"
+          type="password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          disabled={submitting}
+          fullWidth
+          required
+          autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+        />
+        {mode === 'register' && (
+          <TextField
+            label="Confirm Password"
+            type="password"
+            value={confirm}
+            onChange={e => setConfirm(e.target.value)}
+            disabled={submitting}
+            fullWidth
+            required
+          />
         )}
 
-        <Box component="form" onSubmit={handleSubmit} sx={{ width: '100%', mt: 2 }}>
-          <TextField
-            label="Email"
-            fullWidth
-            margin="normal"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            disabled={submitting}
-          />
-          <TextField
-            label="Password"
-            type="password"
-            fullWidth
-            margin="normal"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={submitting}
-          />
+        <Button
+          type="submit"
+          variant="contained"
+          fullWidth
+          disabled={submitting}
+          startIcon={submitting ? <CircularProgress size={18} color="inherit" /> : null}
+          sx={{ py: 1.5, borderRadius: 2, fontWeight: 'bold', textTransform: 'none', fontSize: '1rem' }}
+        >
+          {submitting
+            ? (mode === 'login' ? 'Signing in...' : 'Creating account...')
+            : (mode === 'login' ? 'Sign In' : 'Create Account')}
+        </Button>
 
-          {/* ── NEW: confirm password — only shown in register mode ─────── */}
-          {mode === 'register' && (
-            <TextField
-              label="Confirm Password"
-              type="password"
-              fullWidth
-              margin="normal"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-              disabled={submitting}
-            />
-          )}
-
-          {/* ── Submit button — label adapts to mode ───────────────────── */}
-          <Button
-            type="submit"
-            fullWidth
-            variant="contained"
-            onClick={handleSubmit}
-            disabled={submitting}
-            startIcon={submitting ? <CircularProgress size={18} color="inherit" /> : null}
-            sx={{
-              mt: 2,
-              py: 1.5,
-              borderRadius: 2,
-              fontWeight: 'bold',
-              textTransform: 'none',
-              fontSize: '1rem',
-            }}
-          >
-            {submitting
-              ? (mode === 'login' ? 'Signing in...' : 'Creating account...')
-              : (mode === 'login' ? 'Sign In' : 'Create Account')
-            }
-          </Button>
-        </Box>
-
-        {/* ── NEW: toggle link between sign-in and register ──────────────── */}
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+        <Typography variant="body2" textAlign="center" color="text.secondary">
           {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
           <Box
             component="span"
             onClick={switchMode}
-            sx={{
-              color: 'primary.main',
-              cursor: 'pointer',
-              fontWeight: 'bold',
-              '&:hover': { textDecoration: 'underline' },
-            }}
+            sx={{ color: 'primary.main', cursor: 'pointer', fontWeight: 600, '&:hover': { textDecoration: 'underline' } }}
           >
             {mode === 'login' ? 'Create one' : 'Sign in'}
           </Box>
         </Typography>
       </Paper>
-    </Container>
+    </Box>
   );
 }

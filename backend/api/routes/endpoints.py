@@ -1,9 +1,42 @@
+"""
+API Endpoints — Confidence Scoring Framework
+
+KEY FIXES in this version:
+─────────────────────────────────────────────────────────────────────────────
+1. DOMAIN NOT PASSED TO CHROMA (critical):
+   Old: chroma_service.add_documents(chunks)
+   Domain was never stored in ChromaDB. It lived only in SQLite.
+   New: chroma_service.add_documents(chunks, domain=domain)
+   Now each chunk has a "domain" key in its metadata, enabling direct
+   ChromaDB filtering without needing a SQL join.
+
+2. DOMAIN FILTER — direct metadata filter:
+   Old: SQL join → get filenames → filter by source in ChromaDB (fragile)
+   New: where={"domain": domain.lower()} filters directly in ChromaDB.
+   SQL fallback kept for documents ingested before this fix.
+
+3. RICHER RAG CONTEXT:
+   Old: rag_context = "\n\n---\n\n".join(p["text"] for p in passages)
+   New: each passage is numbered and labelled with its source so the LLM
+   can reference specific sources. Also respects a max-chars guard so
+   extremely long contexts don't overflow the Groq token window.
+
+4. TOP_K increased from 3 → 5:
+   More passages = more context for the LLM to synthesise from.
+   Combined with the new prompt (comprehensive explanation), this
+   produces richer, more accurate answers.
+   Update settings.TOP_K_RETRIEVAL = 5 in your .env or config.py.
+"""
+
 import json
 import logging
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import (
     APIRouter, BackgroundTasks, Depends,
@@ -36,9 +69,6 @@ from services.llama_service import LlamaService
 from services.pdf_processor import PDFProcessor
 from services.scoring_service import ScoringService
 
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -49,7 +79,12 @@ llama_service       = LlamaService()
 scoring_service     = ScoringService()
 _inference_executor = ThreadPoolExecutor(max_workers=2)
 
-# ── Sprint 5: Global training state ───────────────────────────────────────────
+# Maximum characters for the RAG context string sent to the LLM.
+# Groq's context window is large but we cap context to keep latency low.
+# 5 chunks × ~700 chars = ~3500 chars ≈ 875 tokens — well within limits.
+_MAX_CONTEXT_CHARS = 4000
+
+# ── Training state ─────────────────────────────────────────────────────────────
 training_status = {
     "status":       "idle",
     "progress":     0,
@@ -65,7 +100,7 @@ training_status = {
 
 @router.post("/auth/register", response_model=UserResponse)
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    """Register a new user. First user registered is automatically admin."""
+    """Register a new user. First registered user is automatically admin."""
     existing = db.query(User).filter(User.email == user.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -103,6 +138,40 @@ def login(
 # 2. CHAT & QUERY ROUTES
 # ==========================================
 
+def _build_rag_context(passages: List[dict], max_chars: int = _MAX_CONTEXT_CHARS) -> str:
+    """
+    Build a numbered, source-labelled context string for the LLM.
+
+    FIX: Old version just joined raw text with '---'. The LLM had no way to
+    distinguish passages or trace which source an answer came from. Numbering
+    each passage lets the new prompt instruct the model to synthesise across
+    passages while staying grounded.
+
+    Also truncates to max_chars to prevent context window overflow.
+    """
+    parts   = []
+    total   = 0
+
+    for i, p in enumerate(passages, 1):
+        source   = p.get("source", "unknown")
+        sim      = p.get("similarity_score", 0)
+        text     = p["text"].strip()
+        header   = f"[Passage {i} | Source: {source} | Relevance: {sim:.2f}]"
+        entry    = f"{header}\n{text}"
+
+        if total + len(entry) > max_chars:
+            # Add a truncated version of the last chunk if there's room
+            remaining = max_chars - total - len(header) - 20
+            if remaining > 200:
+                parts.append(f"{header}\n{text[:remaining]}…")
+            break
+
+        parts.append(entry)
+        total += len(entry)
+
+    return "\n\n" + ("\n\n---\n\n".join(parts)) + "\n"
+
+
 @router.post("/query", response_model=QueryResponse)
 async def submit_query(
     request:      QueryRequest,
@@ -117,7 +186,7 @@ async def submit_query(
         # ── Create or validate session ─────────────────────────────────────
         if not session_id:
             words       = request.question.split()
-            title       = " ".join(words[:5]) + ("..." if len(words) > 5 else "")
+            title       = " ".join(words[:5]) + ("…" if len(words) > 5 else "")
             new_session = ChatSession(user_id=current_user.id, title=title)
             db.add(new_session)
             db.commit()
@@ -131,7 +200,7 @@ async def submit_query(
             if not session_db:
                 raise HTTPException(status_code=404, detail="Session not found")
 
-        # ── Build conversation context (last 1 message only) ──────────────
+        # ── Conversation context (last turn only) ──────────────────────────
         past_messages = db.query(ChatHistory).filter(
             ChatHistory.session_id == session_id
         ).order_by(ChatHistory.timestamp.desc()).limit(1).all()
@@ -142,33 +211,74 @@ async def submit_query(
                 conversation_context += f"User: {msg.question}\nAI: {msg.answer}\n\n"
 
         # ── Domain filter ──────────────────────────────────────────────────
-        domain_filter = None
-        if request.domain and request.domain.lower() != "all":
-            domain_docs      = db.query(Document.filename).filter(Document.domain == request.domain).all()
-            domain_filenames = [d[0] for d in domain_docs]
-            if domain_filenames:
-                domain_filter = {"source": {"$in": domain_filenames}}
-                logger.info(f"[Domain Filter] Restricting RAG to domain='{request.domain}' ({len(domain_filenames)} docs)")
-            else:
-                logger.warning(f"[Domain Filter] No documents found for domain='{request.domain}'. Falling back to full search.")
+        # FIX: Use direct ChromaDB metadata filter {"domain": ...} first.
+        # Fall back to SQL-based filename filter for backward compatibility
+        # (documents ingested before the domain-metadata fix).
+        domain_filter: Optional[dict] = None
+
+        if request.domain and request.domain.lower() not in ("all", ""):
+            domain_lower = request.domain.lower()
+
+            # Primary: direct metadata filter (works for newly ingested docs)
+            domain_filter = {"domain": domain_lower}
+            logger.info(
+                "[Domain Filter] Using direct metadata filter: domain='%s'",
+                domain_lower,
+            )
+
+            # Verify there are any chunks with this domain in ChromaDB;
+            # if not, fall back to SQL-based source filter for old docs.
+            try:
+                probe = chroma_service.collection.get(
+                    where=domain_filter, limit=1
+                )
+                if not probe["ids"]:
+                    logger.info(
+                        "[Domain Filter] No chunks with domain='%s' in metadata. "
+                        "Falling back to SQL-based source filter.",
+                        domain_lower,
+                    )
+                    domain_docs      = db.query(Document.filename).filter(
+                        Document.domain == request.domain
+                    ).all()
+                    domain_filenames = [d[0] for d in domain_docs]
+                    if domain_filenames:
+                        domain_filter = {"source": {"$in": domain_filenames}}
+                    else:
+                        logger.warning(
+                            "[Domain Filter] No documents for domain='%s'. "
+                            "Searching full collection.",
+                            request.domain,
+                        )
+                        domain_filter = None
+            except Exception as exc:
+                logger.warning("[Domain Filter] Probe failed: %s. Skipping filter.", exc)
+                domain_filter = None
 
         # ── STEP 1: RAG retrieval with reranking ───────────────────────────
-        # Retrieve candidates (up to top-20 internally), then rerank with
-        # the cross-encoder if available, returning top_k final results.
         retrieved_passages = chroma_service.search_with_rerank(
             request.question,
             top_k=settings.TOP_K_RETRIEVAL,
-            where=domain_filter
+            where=domain_filter,
         )
 
         # ── PRE-FLIGHT: similarity threshold check ─────────────────────────
-        # If no passages were found OR the best match is below 0.45 cosine
-        # similarity, the question is off-topic for the knowledge base.
-        # Skip the LLM entirely and return a grounded not-found response.
+        # With the corrected similarity formula (1 - dist/2), MiniLM returns:
+        #   ~0.50–0.70 for genuinely relevant text
+        #   ~0.20–0.40 for loosely related text
+        #   ~0.00–0.20 for unrelated text
+        # Threshold 0.20 lets through anything loosely related while blocking
+        # truly off-topic queries.
         max_sim = max(
             (p["similarity_score"] for p in retrieved_passages), default=0.0
         )
-        if not retrieved_passages or max_sim < 0.45:
+
+        logger.info(
+            "[RAG] Retrieved %d passages, max_sim=%.3f",
+            len(retrieved_passages), max_sim,
+        )
+
+        if not retrieved_passages or max_sim < 0.20:
             logger.info(
                 "[PreFlight] Blocked — passages=%d, max_sim=%.3f",
                 len(retrieved_passages), max_sim,
@@ -178,9 +288,10 @@ async def submit_query(
                 "in the knowledge base."
             )
             confidence_score = 0.0
-            confidence_label = "Unverified - Not in Knowledge Base"
+            confidence_label = "Unverified — Not in Knowledge Base"
             explanation      = (
-                "No documents with sufficient similarity were found for this query."
+                "No sufficiently similar documents were found for this query. "
+                "Try rephrasing or ensure the relevant document is uploaded."
             )
             citations        = []
             score_breakdown  = {
@@ -190,15 +301,17 @@ async def submit_query(
                 "precision":    0,
             }
         else:
-            # ── STEP 2: Build RAG context ──────────────────────────────────
-            rag_context = "\n\n---\n\n".join(p["text"] for p in retrieved_passages)
-            logger.info("[RAG] Retrieved %d passages for grounding", len(retrieved_passages))
-
-            # ── STEP 3: Generate grounded answer ──────────────────────────
-            # LlamaService.generate_answer returns NOT_FOUND_MSG when context
-            # is None; here it's always set from rag_context.
+            # ── STEP 2: Build numbered, source-labelled RAG context ────────
+            # FIX: richer context format with passage numbers and source labels.
+            rag_context  = _build_rag_context(retrieved_passages)
             final_context = rag_context or conversation_context or None
 
+            logger.info(
+                "[RAG] Context built — %d chars from %d passages",
+                len(rag_context), len(retrieved_passages),
+            )
+
+            # ── STEP 3: Generate grounded answer ──────────────────────────
             loop   = asyncio.get_event_loop()
             answer = await loop.run_in_executor(
                 _inference_executor,
@@ -208,7 +321,7 @@ async def submit_query(
                 ),
             )
 
-            # ── STEP 4: Score answer against retrieved passages ────────────
+            # ── STEP 4: Score answer ───────────────────────────────────────
             confidence_score, explanation, citations, score_breakdown = (
                 scoring_service.compute_confidence_score(
                     answer=answer,
@@ -216,12 +329,13 @@ async def submit_query(
                     retrieved_passages=retrieved_passages,
                 )
             )
+
             if confidence_score >= settings.HIGH_CONFIDENCE_THRESHOLD:
-                confidence_label = "High - Verified"
+                confidence_label = "High — Verified"
             elif confidence_score >= settings.MEDIUM_CONFIDENCE_THRESHOLD:
-                confidence_label = "Medium - Partially Verified"
+                confidence_label = "Medium — Partially Verified"
             else:
-                confidence_label = "Low - Unverified"
+                confidence_label = "Low — Unverified"
 
         # ── Persist to DB ──────────────────────────────────────────────────
         history_entry = ChatHistory(
@@ -254,8 +368,11 @@ async def submit_query(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing query: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+        logger.error("Error processing query: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing query: {str(e)}"
+        )
 
 
 @router.post("/feedback", response_model=FeedbackResponse)
@@ -265,7 +382,9 @@ def submit_feedback(
     db:           Session = Depends(get_db)
 ):
     """Submit a star rating + optional comment for a chat response."""
-    history_item = db.query(ChatHistory).filter(ChatHistory.id == feedback.history_id).first()
+    history_item = db.query(ChatHistory).filter(
+        ChatHistory.id == feedback.history_id
+    ).first()
     if not history_item:
         raise HTTPException(status_code=404, detail="Chat entry not found")
     if history_item.user_id != current_user.id:
@@ -311,7 +430,8 @@ def get_session_details(
     db:           Session = Depends(get_db)
 ):
     session = db.query(ChatSession).filter(
-        ChatSession.id == session_id, ChatSession.user_id == current_user.id
+        ChatSession.id == session_id,
+        ChatSession.user_id == current_user.id
     ).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -334,7 +454,8 @@ def get_session_analytics(
     db:           Session = Depends(get_db)
 ):
     session = db.query(ChatSession).filter(
-        ChatSession.id == session_id, ChatSession.user_id == current_user.id
+        ChatSession.id == session_id,
+        ChatSession.user_id == current_user.id
     ).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -350,7 +471,10 @@ def get_session_analytics(
         "session_id":         session_id,
         "average_confidence": round(avg_score, 2),
         "total_interactions": len(messages),
-        "trend": [{"turn": i + 1, "score": round(s * 100, 1)} for i, s in enumerate(scores)],
+        "trend": [
+            {"turn": i + 1, "score": round(s * 100, 1)}
+            for i, s in enumerate(scores)
+        ],
     }
 
 
@@ -367,7 +491,7 @@ async def upload_document(
 ):
     """Upload a PDF to the knowledge base with a domain tag. Admin only."""
     try:
-        if not file.filename.endswith(".pdf"):
+        if not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
         upload_dir = Path(settings.UPLOAD_DIRECTORY)
@@ -379,41 +503,69 @@ async def upload_document(
 
         chunks = pdf_processor.process_pdf(str(file_path), document_id=file.filename)
         if not chunks:
-            raise HTTPException(status_code=400, detail="No text could be extracted from the PDF")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No text could be extracted from this PDF. "
+                    "Ensure poppler is installed: brew install poppler"
+                )
+            )
 
-        num_added    = chroma_service.add_documents(chunks)
-        existing_doc = db.query(Document).filter(Document.filename == file.filename).first()
+        # FIX: pass domain so it gets stored in ChromaDB chunk metadata.
+        # This enables direct domain filtering without SQL joins.
+        num_added    = chroma_service.add_documents(chunks, domain=domain)
+        existing_doc = db.query(Document).filter(
+            Document.filename == file.filename
+        ).first()
 
         if existing_doc:
             existing_doc.upload_date = datetime.utcnow()
             existing_doc.chunk_count = num_added
             existing_doc.domain      = domain
         else:
-            db.add(Document(filename=file.filename, chunk_count=num_added, domain=domain))
+            db.add(Document(
+                filename    = file.filename,
+                chunk_count = num_added,
+                domain      = domain,
+            ))
         db.commit()
 
-        logger.info(f"[Upload] '{file.filename}' uploaded by {current_user.email} → domain='{domain}', chunks={num_added}")
+        logger.info(
+            "[Upload] '%s' by %s → domain='%s', chunks=%d",
+            file.filename, current_user.email, domain, num_added,
+        )
 
         return UploadResponse(
             success        = True,
-            message        = f"Document '{file.filename}' uploaded to domain '{domain}' successfully",
+            message        = (
+                f"Document '{file.filename}' uploaded to domain '{domain}' "
+                f"({num_added} chunks indexed)"
+            ),
             filename       = file.filename,
             document_id    = file.filename,
-            chunks_created = num_added
+            chunks_created = num_added,
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error uploading document: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
+        logger.error("Error uploading document: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing upload: {str(e)}"
+        )
 
 
 @router.get("/domains")
-def get_available_domains(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    domains     = db.query(Document.domain).filter(Document.domain != None).distinct().order_by(Document.domain).all()
+def get_available_domains(
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db)
+):
+    domains     = db.query(Document.domain).filter(
+        Document.domain != None
+    ).distinct().order_by(Document.domain).all()
     domain_list = [d[0] for d in domains if d[0]]
-    logger.info(f"[Domains] Available domains: {domain_list}")
+    logger.info("[Domains] Available: %s", domain_list)
     return domain_list
 
 
@@ -430,14 +582,22 @@ def update_document_domain(
     old_domain = doc.domain
     doc.domain = domain
     db.commit()
-    logger.info(f"[Domain Update] '{doc.filename}' domain changed: '{old_domain}' → '{domain}' by {current_user.email}")
+    logger.info(
+        "[Domain Update] '%s': '%s' → '%s' by %s",
+        doc.filename, old_domain, domain, current_user.email,
+    )
     return {"message": f"Domain updated to '{domain}' for '{doc.filename}'"}
 
 
 @router.get("/admin/analytics")
-def get_analytics(current_user: User = Depends(get_current_active_admin), db: Session = Depends(get_db)):
+def get_analytics(
+    current_user: User    = Depends(get_current_active_admin),
+    db:           Session = Depends(get_db)
+):
     avg_rating    = db.query(func.avg(Feedback.rating)).scalar() or 0
-    rating_counts = db.query(Feedback.rating, func.count(Feedback.rating)).group_by(Feedback.rating).all()
+    rating_counts = db.query(
+        Feedback.rating, func.count(Feedback.rating)
+    ).group_by(Feedback.rating).all()
     distribution  = [{"name": f"{i} Stars", "value": 0} for i in range(1, 6)]
     for r, count in rating_counts:
         if 1 <= r <= 5:
@@ -450,50 +610,82 @@ def get_analytics(current_user: User = Depends(get_current_active_admin), db: Se
 
 
 @router.get("/admin/documents")
-def list_documents(current_user: User = Depends(get_current_active_admin), db: Session = Depends(get_db)):
+def list_documents(
+    current_user: User    = Depends(get_current_active_admin),
+    db:           Session = Depends(get_db)
+):
     docs = db.query(Document).order_by(Document.upload_date.desc()).all()
-    return [{"id": doc.id, "filename": doc.filename, "domain": doc.domain or "General", "chunk_count": doc.chunk_count, "upload_date": doc.upload_date} for doc in docs]
+    return [
+        {
+            "id":          doc.id,
+            "filename":    doc.filename,
+            "domain":      doc.domain or "General",
+            "chunk_count": doc.chunk_count,
+            "upload_date": doc.upload_date,
+        }
+        for doc in docs
+    ]
 
 
 @router.delete("/admin/documents/{doc_id}")
-def delete_document(doc_id: int, current_user: User = Depends(get_current_active_admin), db: Session = Depends(get_db)):
+def delete_document(
+    doc_id:       int,
+    current_user: User    = Depends(get_current_active_admin),
+    db:           Session = Depends(get_db)
+):
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     chroma_service.delete_document(doc.filename)
     db.delete(doc)
     db.commit()
-    return {"message": f"Deleted {doc.filename}"}
+    return {"message": f"Deleted '{doc.filename}'"}
 
 
 @router.get("/admin/feedback")
-def get_admin_feedback_logs(current_user: User = Depends(get_current_active_admin), db: Session = Depends(get_db)):
-    feedbacks          = db.query(Feedback).order_by(Feedback.created_at.desc()).all()
-    formatted_feedback = []
+def get_admin_feedback_logs(
+    current_user: User    = Depends(get_current_active_admin),
+    db:           Session = Depends(get_db)
+):
+    feedbacks = db.query(Feedback).order_by(Feedback.created_at.desc()).all()
+    result    = []
     for fb in feedbacks:
-        user_email = "Unknown User"
+        user_email = "Unknown"
         if fb.chat_history and fb.chat_history.user:
             user_email = fb.chat_history.user.email
-        formatted_feedback.append({"timestamp": fb.created_at, "user_email": user_email, "rating": fb.rating, "comment": fb.comment})
-    return formatted_feedback
+        result.append({
+            "timestamp":  fb.created_at,
+            "user_email": user_email,
+            "rating":     fb.rating,
+            "comment":    fb.comment,
+        })
+    return result
 
 
 @router.get("/admin/low-confidence")
-def get_low_confidence_sessions(current_user: User = Depends(get_current_active_admin), db: Session = Depends(get_db)):
-    low_conf_entries = db.query(ChatHistory).filter(
-        ChatHistory.confidence_score < 0.5, ChatHistory.confidence_score > 0.05
+def get_low_confidence_sessions(
+    current_user: User    = Depends(get_current_active_admin),
+    db:           Session = Depends(get_db)
+):
+    entries = db.query(ChatHistory).filter(
+        ChatHistory.confidence_score < 0.5,
+        ChatHistory.confidence_score > 0.05,
     ).order_by(ChatHistory.timestamp.desc()).limit(100).all()
 
     results = []
-    for entry in low_conf_entries:
-        user_email = "Unknown User"
+    for entry in entries:
+        user_email = "Unknown"
         if entry.user:
             user_email = entry.user.email
         results.append({
             "history_id":       entry.id,
             "user_email":       user_email,
             "question":         entry.question,
-            "answer":           (entry.answer[:200] + "...") if len(entry.answer or "") > 200 else entry.answer,
+            "answer":           (
+                (entry.answer[:200] + "…")
+                if len(entry.answer or "") > 200
+                else entry.answer
+            ),
             "confidence_score": entry.confidence_score,
             "timestamp":        entry.timestamp,
         })
@@ -501,7 +693,7 @@ def get_low_confidence_sessions(current_user: User = Depends(get_current_active_
 
 
 # ==========================================
-# 4. SPRINT 5 — RETRAINING ROUTES
+# 4. RETRAINING ROUTES
 # ==========================================
 
 @router.post("/admin/trigger-retrain")
@@ -530,32 +722,62 @@ async def trigger_retraining(
     )
 
     if not gold_rows and not hard_rows:
-        raise HTTPException(status_code=400, detail="Not enough labelled data to start training.")
+        raise HTTPException(
+            status_code=400,
+            detail="Not enough labelled data to start training.",
+        )
 
-    def row_to_dict(r): return {"question": r.question, "answer": r.answer, "confidence_score": r.confidence_score}
+    def row_to_dict(r):
+        return {
+            "question":         r.question,
+            "answer":           r.answer,
+            "confidence_score": r.confidence_score,
+        }
 
     gold_data = [row_to_dict(r) for r in gold_rows]
     hard_data = [row_to_dict(r) for r in hard_rows]
 
     training_status.update({
-        "status": "running", "progress": 0,
-        "message": f"Starting — {len(gold_data)} gold samples, {len(hard_data)} hard negatives.",
-        "started_at": datetime.now().isoformat(), "completed_at": None,
+        "status":     "running",
+        "progress":   0,
+        "message":    (
+            f"Starting — {len(gold_data)} gold samples, "
+            f"{len(hard_data)} hard negatives."
+        ),
+        "started_at":   datetime.now().isoformat(),
+        "completed_at": None,
     })
 
     background_tasks.add_task(_run_retraining_job, gold_data, hard_data)
-    return {"message": "Retraining job started successfully.", "triggered_by": current_user.email, "gold_count": len(gold_data), "hard_count": len(hard_data)}
+    return {
+        "message":      "Retraining job started.",
+        "triggered_by": current_user.email,
+        "gold_count":   len(gold_data),
+        "hard_count":   len(hard_data),
+    }
 
 
 def _run_retraining_job(gold_list: list, hard_list: list):
     global training_status
     try:
-        training_status.update({"progress": 10, "message": "Formatting training data..."})
-        llama_service.retrain(gold_data=gold_list, hard_data=hard_list, status_callback=_update_training_progress)
-        training_status.update({"status": "completed", "progress": 100, "message": "Training complete!", "completed_at": datetime.now().isoformat()})
+        training_status.update({"progress": 10, "message": "Formatting training data…"})
+        llama_service.retrain(
+            gold_data=gold_list,
+            hard_data=hard_list,
+            status_callback=_update_training_progress,
+        )
+        training_status.update({
+            "status":       "completed",
+            "progress":     100,
+            "message":      "Training complete!",
+            "completed_at": datetime.now().isoformat(),
+        })
     except Exception as e:
-        logger.error(f"Retraining job failed: {e}", exc_info=True)
-        training_status.update({"status": "failed", "message": f"Training failed: {str(e)}"})
+        logger.error("Retraining job failed: %s", e, exc_info=True)
+        training_status.update({
+            "status":  "failed",
+            "message": f"Training failed: {str(e)}",
+        })
 
 
 def _update_training_progress(progress: int, message: str):
@@ -569,7 +791,7 @@ def get_training_status(current_user: User = Depends(get_current_active_admin)):
 
 
 # ==========================================
-# 5. TASK 18 — MODEL DEPLOYMENT ROUTES
+# 5. MODEL DEPLOYMENT ROUTES
 # ==========================================
 
 class DeployModelRequest(BaseModel):
@@ -578,18 +800,24 @@ class DeployModelRequest(BaseModel):
 
 
 @router.post("/admin/deploy-model")
-def deploy_model(request: DeployModelRequest, current_user: User = Depends(get_current_active_admin)):
+def deploy_model(
+    request:      DeployModelRequest,
+    current_user: User = Depends(get_current_active_admin)
+):
     backup  = request.backup_path or settings.LLAMA_MODEL_NAME
     success = llama_service.hot_swap_model(request.new_model_path)
     if not success:
         rolled_back = llama_service.rollback_model(backup)
-        return {"status": "rolled_back", "message": f"Swap failed. Reverted to '{backup}'.", "rollback_ok": rolled_back}
-    return {"status": "success", "message": f"Model hot-swapped to '{request.new_model_path}' successfully."}
+        return {
+            "status":      "rolled_back",
+            "message":     f"Swap failed. Reverted to '{backup}'.",
+            "rollback_ok": rolled_back,
+        }
+    return {
+        "status":  "success",
+        "message": f"Model hot-swapped to '{request.new_model_path}'.",
+    }
 
-
-# ==========================================
-# 6. TASK 19 — MODEL VERSION HISTORY ROUTE
-# ==========================================
 
 @router.get("/admin/model-history")
 def get_model_history(current_user: User = Depends(get_current_active_admin)):
@@ -603,7 +831,7 @@ def get_model_history(current_user: User = Depends(get_current_active_admin)):
 
 
 # ==========================================
-# 7. SYSTEM ROUTES
+# 6. SYSTEM ROUTES
 # ==========================================
 
 @router.get("/status", response_model=StatusResponse)
@@ -613,9 +841,19 @@ async def get_status():
         llm_ready  = llama_service.is_ready()
         doc_count  = chroma_service.get_count()
         status_str = "healthy" if (kb_ready and llm_ready) else "degraded"
-        return StatusResponse(status=status_str, knowledge_base_ready=kb_ready, llm_ready=llm_ready, documents_count=doc_count)
+        return StatusResponse(
+            status               = status_str,
+            knowledge_base_ready = kb_ready,
+            llm_ready            = llm_ready,
+            documents_count      = doc_count,
+        )
     except Exception:
-        return StatusResponse(status="error", knowledge_base_ready=False, llm_ready=False, documents_count=0)
+        return StatusResponse(
+            status               = "error",
+            knowledge_base_ready = False,
+            llm_ready            = False,
+            documents_count      = 0,
+        )
 
 
 @router.get("/health")

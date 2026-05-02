@@ -12,6 +12,7 @@ import {
 } from '@mui/icons-material';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { useAuth } from '../context/AuthContext';
+import StarBackground from '../components/Starbackground';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -186,7 +187,11 @@ const AdminPage = () => {
 
   const cardStyle = {
     p: 3, borderRadius: '20px', mb: 4,
-    border: `1px solid ${theme.palette.divider}`
+    background: theme.palette.mode === 'dark' ? '#161b27' : '#ffffff',  // ✅ solid card bg
+    border: `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)'}`,
+    boxShadow: theme.palette.mode === 'dark'
+      ? '0 2px 16px rgba(0,0,0,0.6)'
+      : '0 8px 32px rgba(0,0,0,0.08)',
   };
 
   const statusChipColor = { idle: 'default', running: 'warning', completed: 'success', failed: 'error' }[trainingStatus];
@@ -198,12 +203,26 @@ const AdminPage = () => {
     const domains = [...new Set(documents.map(d => d.domain || 'General'))];
     return domainColors[domains.indexOf(domain) % domainColors.length];
   };
-
+  
   return (
-    <Container maxWidth="lg" sx={{ my: 4, height: '100%', overflowY: 'auto' }}>
-      <Typography variant="h4" fontWeight={800} gutterBottom sx={{ mb: 4 }}>
-        Admin Dashboard
-      </Typography>
+    <Box
+      sx={{
+        position: 'fixed',
+        inset: 0,
+        top: '64px',
+        bgcolor: '#000000',           
+        overflowY: 'auto',
+        overflowX: 'hidden',
+      }}
+    >
+      <StarBackground mode={theme.palette.mode} /> 
+      <Container
+        maxWidth="lg"
+        sx={{ py: 4, position: 'relative', zIndex: 1 }}
+      >
+        <Typography variant="h4" fontWeight="bold" gutterBottom>
+          Admin Dashboard
+        </Typography>
 
       {/* 1. ANALYTICS GRIDS */}
       <Grid container spacing={3} sx={{ mb: 4 }}>
@@ -296,7 +315,7 @@ const AdminPage = () => {
           </Table>
         </TableContainer>
       </Paper>
-
+      
       {/* 3. MODEL RETRAINING PANEL */}
       <Paper sx={{ ...cardStyle, border: `1px solid ${theme.palette.primary.main}` }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 3 }}>
@@ -310,7 +329,7 @@ const AdminPage = () => {
             onClick={triggerRetrain} disabled={isRetraining}
             sx={{ alignSelf: 'flex-start', borderRadius: 2, fontWeight: 'bold', px: 3 }}
           >
-            {isRetraining ? 'Training in Progress...' : '🚀 Trigger Retraining'}
+            {isRetraining ? 'Training in Progress...' : 'Trigger Retraining'}
           </Button>
           {(isRetraining || trainingStatus === 'completed' || trainingStatus === 'failed') && (
             <Box sx={{ mt: 1 }}>
@@ -326,10 +345,10 @@ const AdminPage = () => {
             </Box>
           )}
           {trainingStatus === 'completed' && (
-            <Alert severity="success" sx={{ borderRadius: 2 }}>✅ Retraining completed successfully! The model has been updated.</Alert>
+            <Alert severity="success" sx={{ borderRadius: 2 }}>Retraining completed successfully! The model has been updated.</Alert>
           )}
           {trainingStatus === 'failed' && (
-            <Alert severity="error" sx={{ borderRadius: 2 }}>❌ Retraining failed: {trainingMessage || 'Check server logs.'}</Alert>
+            <Alert severity="error" sx={{ borderRadius: 2 }}>Retraining failed: {trainingMessage || 'Check server logs.'}</Alert>
           )}
         </Box>
       </Paper>
@@ -525,6 +544,7 @@ const AdminPage = () => {
         </TableContainer>
       </Paper>
     </Container>
+    </Box>
   );
 };
 

@@ -1,57 +1,48 @@
 {
-  "evaluated_at": "2026-04-11T21:21:40.958170",
-  "total_samples": 5,
+  "evaluated_at": "2026-05-02T18:41:51.429850",
+  "total_samples": 4,
   "averages": {
-    "bleu": 0.9752,
-    "rouge1": 0.9868,
-    "rouge2": 0.9868,
-    "rougeL": 0.9868
+    "bleu": 0.5988,
+    "rouge1": 0.6965,
+    "rouge2": 0.6858,
+    "rougeL": 0.6965
   },
   "per_sample": [
     {
-      "question": "What is natural language processing?",
+      "question": "what are tokens?",
       "type": "gold_standard",
-      "confidence": 0.85,
+      "confidence": 0.83,
       "bleu": 1.0,
       "rouge1": 1.0,
       "rouge2": 1.0,
       "rougeL": 1.0
+    },
+    {
+      "question": "who is trump?",
+      "type": "hard_negative",
+      "confidence": 0.32,
+      "bleu": 0.8669,
+      "rouge1": 0.9289,
+      "rouge2": 0.9286,
+      "rougeL": 0.9289
+    },
+    {
+      "question": "what is ocean?",
+      "type": "hard_negative",
+      "confidence": 0.0,
+      "bleu": 0.2641,
+      "rouge1": 0.4286,
+      "rouge2": 0.4074,
+      "rougeL": 0.4286
     },
     {
       "question": "what are embeddings?",
-      "type": "gold_standard",
-      "confidence": 0.85,
-      "bleu": 1.0,
-      "rouge1": 1.0,
-      "rouge2": 1.0,
-      "rougeL": 1.0
-    },
-    {
-      "question": "What are transformers?",
-      "type": "gold_standard",
-      "confidence": 0.94,
-      "bleu": 1.0,
-      "rouge1": 1.0,
-      "rouge2": 1.0,
-      "rougeL": 1.0
-    },
-    {
-      "question": "What is Wordnet?",
-      "type": "gold_standard",
-      "confidence": 0.94,
-      "bleu": 1.0,
-      "rouge1": 1.0,
-      "rouge2": 1.0,
-      "rougeL": 1.0
-    },
-    {
-      "question": "what is a RAG",
       "type": "hard_negative",
-      "confidence": 0.4653,
-      "bleu": 0.8762,
-      "rouge1": 0.9342,
-      "rouge2": 0.9339,
-      "rougeL": 0.9342
+      "confidence": 0.32,
+      "bleu": 0.2641,
+      "rouge1": 0.4286,
+      "rouge2": 0.4074,
+      "rougeL": 0.4286
     }
   ]
 }

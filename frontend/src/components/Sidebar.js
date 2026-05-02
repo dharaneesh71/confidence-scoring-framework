@@ -1,34 +1,29 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Box, Typography, List, ListItemButton, ListItemText, Drawer } from '@mui/material';
+import { Box, Typography, List, ListItemButton, ListItemText, Drawer, useTheme} from '@mui/material';
 
-const Sidebar = ({ sessions, isOpen, onToggle }) => {
+const Sidebar = ({ sessions, open, onClose }) => {
   const navigate = useNavigate();
+  const theme = useTheme();
 
   const groupSessions = (sessionsList) => {
     const groups = { Today: [], Yesterday: [], "Previous 7 Days": [], "Older": [] };
     
-    // Normalize "now" to midnight local time
     const now = new Date();
     now.setHours(0, 0, 0, 0); 
 
     const sorted = [...sessionsList].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     sorted.forEach(s => {
-      // Force UTC parsing to fix timezone drift
       const dateString = s.created_at.endsWith('Z') ? s.created_at : `${s.created_at}Z`;
       const date = new Date(dateString);
-      
-      // Normalize chat date to midnight local time
       date.setHours(0, 0, 0, 0); 
-      
       const diffDays = Math.round((now - date) / (1000 * 60 * 60 * 24));
       
-      // If diffDays is 0 (or negative due to lingering drift), it's Today
       if (diffDays <= 0) groups.Today.push(s);
       else if (diffDays === 1) groups.Yesterday.push(s);
       else if (diffDays <= 7) groups["Previous 7 Days"].push(s);
-      else { groups["Older"].push(s); }
+      else groups["Older"].push(s);
     });
     
     return groups;
@@ -37,10 +32,29 @@ const Sidebar = ({ sessions, isOpen, onToggle }) => {
   const groupedData = groupSessions(sessions);
 
   return (
-    <Drawer variant="temporary" anchor="left" open={isOpen} onClose={onToggle}>
-      <Box sx={{ width: 280, bgcolor: '#0f172a', color: 'white', height: '100%', display: 'flex', flexDirection: 'column' }}>
-        <Box sx={{ p: 2, borderBottom: '1px solid #1e293b' }}>
-          <Typography variant="h6" sx={{ fontWeight: 'bold', color: '#00d1ff' }}>CHAT HISTORY</Typography>
+    <Drawer
+    variant="temporary"
+    anchor="left"
+    open={open}
+    onClose={onClose}
+    ModalProps={{ keepMounted: true }}
+    slotProps={{ backdrop: { style: { backgroundColor: 'transparent' } } }}
+    PaperProps={{
+      style: {
+        top: '64px',
+        height: 'calc(100% - 64px)',
+        width: 280,
+        backgroundColor: theme.palette.mode === 'dark' ? '#000000' : '#ffffff',  // ✅ mode-aware
+        backgroundImage: 'none',
+        color: theme.palette.mode === 'dark' ? 'white' : '#0f172a',              // ✅ mode-aware
+        boxSizing: 'border-box',
+        borderRight: theme.palette.mode === 'light' ? '1px solid rgba(0,0,0,0.1)' : 'none',
+      }
+    }}
+    >
+      <Box style={{ width: 280, backgroundColor: theme.palette.mode === 'dark' ? '#000000' : '#ffffff', color: theme.palette.mode === 'dark' ? 'white' : '#0f172a', height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <Box style={{ padding: '16px', borderBottom: theme.palette.mode === 'dark' ? '1px solid #1e293b' : '1px solid rgba(0,0,0,0.1)' }}>
+          <Typography variant="h6" sx={{ fontWeight: 'bold', color:  '#a78bfa'  }}>CHAT HISTORY</Typography>
         </Box>
         
         <Box sx={{ flexGrow: 1, overflowY: 'auto', p: 1 }}>
@@ -55,17 +69,17 @@ const Sidebar = ({ sessions, isOpen, onToggle }) => {
                   </Typography>
                   <List disablePadding>
                     {items.map((session) => (
-                      <ListItemButton 
-                        key={session.id} 
-                        onClick={() => { 
-                          navigate(`/chat/${session.id}`); 
-                          onToggle(); // Close drawer after clicking a chat
+                      <ListItemButton
+                        key={session.id}
+                        onClick={() => {
+                          navigate(`/chat/${session.id}`);
+                          onClose();
                         }}
-                        sx={{ borderRadius: 1, mx: 1, '&:hover': { bgcolor: 'rgba(0, 209, 255, 0.1)' } }}
+                        sx={{ borderRadius: 1, mx: 1, color: 'white', '&:hover': { bgcolor: 'rgba(0, 209, 255, 0.1)' } }}
                       >
-                        <ListItemText 
-                          primary={session.title || "New Chat"} 
-                          primaryTypographyProps={{ noWrap: true, fontSize: '0.9rem' }} 
+                        <ListItemText
+                          primary={session.title || "New Chat"}
+                          primaryTypographyProps={{ noWrap: true, fontSize: '0.9rem', color: theme.palette.mode === 'dark' ? 'white' : '#0f172a' }}
                         />
                       </ListItemButton>
                     ))}

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     # HuggingFace — must be set in .env, no default
     HUGGINGFACE_TOKEN: str = ""
-
+    GROQ_API_KEY: str = ""
     # Model
     LLAMA_MODEL_NAME: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 

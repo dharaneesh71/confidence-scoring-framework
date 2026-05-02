@@ -1,187 +1,216 @@
 """
-PDF processing service for extracting and chunking text from documents
+PDF Processor — Text extraction and chunking for ChromaDB ingestion.
+
+ROOT CAUSE FIX:
+    pdfplumber silently returns empty pages for XSL-Formatter / Antenna House
+    generated PDFs (like the NLTK O'Reilly book). This version uses
+    pdftotext (poppler) as the primary extractor with pypdf as a fallback —
+    both reliably extract the 1M+ characters that pdfplumber misses entirely.
+
+INSTALL POPPLER (one-time):
+    macOS  : brew install poppler
+    Ubuntu : sudo apt-get install poppler-utils
+    Docker : apt-get install -y poppler-utils  (in your Dockerfile)
 """
-import PyPDF2
-import pdfplumber
-from pathlib import Path
-from typing import List, Dict, Tuple
-import re
+
 import logging
-import gc  # Added for memory management
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Chunking parameters ────────────────────────────────────────────────────────
+CHUNK_SIZE    = 700    # characters per chunk (~115 words)
+CHUNK_OVERLAP = 140    # 20% overlap to preserve cross-boundary context
+MIN_CHUNK_LEN = 80     # drop fragments (page numbers, headers, whitespace runs)
+
+
 class PDFProcessor:
-    """Handles PDF text extraction and chunking"""
-    
-    def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
+    """
+    Extracts text from PDFs and splits into overlapping chunks ready for
+    ChromaService.add_documents().
+    """
+
+    # ── Text extraction ────────────────────────────────────────────────────────
+
+    def _extract_via_pdftotext(self, pdf_path: str) -> str:
         """
-        Initialize PDF processor
-        
-        Args:
-            chunk_size: Target size of text chunks in characters
-            chunk_overlap: Overlap between chunks in characters
-        """
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-    
-    def extract_text_from_pdf(self, pdf_path: str) -> Tuple[str, Dict[int, str]]:
-        """
-        Extract text from PDF file
-        
-        Args:
-            pdf_path: Path to PDF file
-            
-        Returns:
-            Tuple of (full_text, page_text_dict)
+        Primary extraction: pdftotext -layout preserves reading order across
+        multi-column layouts and handles XSL Formatter PDFs correctly.
+        Returns empty string on failure so the fallback can run.
         """
         try:
-            full_text = ""
-            page_texts = {}
-            
-            # Try pdfplumber first (better text extraction)
-            with pdfplumber.open(pdf_path) as pdf:
-                for page_num, page in enumerate(pdf.pages, start=1):
-                    text = page.extract_text()
-                    if text:
-                        page_texts[page_num] = text
-                        full_text += f"\n{text}\n"
-            
-            if not full_text.strip():
-                # Fallback to PyPDF2 if pdfplumber fails
-                logger.warning(f"pdfplumber extraction empty, trying PyPDF2 for {pdf_path}")
-                with open(pdf_path, 'rb') as file:
-                    pdf_reader = PyPDF2.PdfReader(file)
-                    for page_num in range(len(pdf_reader.pages)):
-                        page = pdf_reader.pages[page_num]
-                        text = page.extract_text()
-                        if text:
-                            page_texts[page_num + 1] = text
-                            full_text += f"\n{text}\n"
-            
-            # Clean the text
-            full_text = self._clean_text(full_text)
-            page_texts = {k: self._clean_text(v) for k, v in page_texts.items()}
-            
-            logger.info(f"Extracted {len(full_text)} characters from {len(page_texts)} pages")
-            return full_text, page_texts
-            
-        except Exception as e:
-            logger.error(f"Error extracting text from PDF {pdf_path}: {e}")
-            raise
-    
-    def _clean_text(self, text: str) -> str:
-        """Clean extracted text"""
-        # Remove excessive whitespace which can mess up chunking math
-        text = re.sub(r'\s+', ' ', text)
-        # Remove special characters that might interfere
-        text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]', '', text)
-        return text.strip()
-    
-    def chunk_text(self, text: str, metadata: Dict = None) -> List[Dict]:
+            result = subprocess.run(
+                ["pdftotext", "-layout", pdf_path, "-"],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                logger.info(
+                    "[PDFProcessor] pdftotext: %d chars from '%s'",
+                    len(result.stdout),
+                    Path(pdf_path).name,
+                )
+                return result.stdout
+            if result.returncode != 0:
+                logger.warning(
+                    "[PDFProcessor] pdftotext exit %d: %s",
+                    result.returncode,
+                    result.stderr[:200],
+                )
+        except FileNotFoundError:
+            logger.warning(
+                "[PDFProcessor] pdftotext not found. "
+                "Install poppler: brew install poppler  OR  apt-get install poppler-utils. "
+                "Falling back to pypdf."
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("[PDFProcessor] pdftotext timed out. Falling back to pypdf.")
+        except Exception as exc:
+            logger.warning("[PDFProcessor] pdftotext error: %s. Falling back.", exc)
+        return ""
+
+    def _extract_via_pypdf(self, pdf_path: str) -> str:
+        """Fallback extraction using pypdf (pip install pypdf)."""
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(pdf_path)
+            pages  = [page.extract_text() or "" for page in reader.pages]
+            text   = "\n".join(pages)
+            logger.info(
+                "[PDFProcessor] pypdf: %d chars from '%s'",
+                len(text),
+                Path(pdf_path).name,
+            )
+            return text
+        except Exception as exc:
+            logger.error("[PDFProcessor] pypdf also failed: %s", exc)
+            return ""
+
+    def extract_text(self, pdf_path: str) -> str:
         """
-        Split text into overlapping chunks
-        
-        Args:
-            text: Text to chunk
-            metadata: Optional metadata to attach to each chunk
-            
-        Returns:
-            List of chunk dictionaries with text and metadata
+        Extract all text from a PDF.
+        Tries pdftotext first, pypdf second.
+        Raises ValueError if both fail (e.g. scanned image PDF).
         """
-        if not text:
-            return []
-        
-        chunks = []
+        text = self._extract_via_pdftotext(pdf_path)
+        if not text.strip():
+            text = self._extract_via_pypdf(pdf_path)
+        if not text.strip():
+            raise ValueError(
+                f"Could not extract text from '{Path(pdf_path).name}'. "
+                "The file may be a scanned image PDF — OCR is required for those."
+            )
+        return text
+
+    # ── Chunking ───────────────────────────────────────────────────────────────
+
+    def _split_into_chunks(
+        self,
+        text: str,
+        chunk_size: int = CHUNK_SIZE,
+        overlap: int    = CHUNK_OVERLAP,
+    ) -> List[str]:
+        """
+        Sliding-window chunker that extends each window to the nearest
+        sentence boundary so the LLM never receives a half-sentence.
+
+        Steps:
+          1. Move a window of `chunk_size` chars through the text.
+          2. Look ahead up to 250 chars for a sentence-ending punctuation.
+          3. Extend the window end to that boundary.
+          4. Advance start by (chunk_size - overlap) chars so windows overlap.
+          5. Drop any chunk shorter than MIN_CHUNK_LEN.
+        """
+        chunks: List[str] = []
+        step  = max(chunk_size - overlap, 50)
         start = 0
-        chunk_id = 0
-        text_length = len(text)
-        
-        while start < text_length:
-            # Calculate provisional end position
-            end = min(start + self.chunk_size, text_length)
-            
-            # If not at the very end of the document, look for a clean break
-            if end < text_length:
-                # Try to find a sentence boundary in the second half of the chunk
-                sentence_end = text.rfind('.', start + self.chunk_size // 2, end)
-                if sentence_end != -1:
-                    end = sentence_end + 1
-                else:
-                    # Fall back to word boundary
-                    space_pos = text.rfind(' ', start, end)
-                    
-                    # CRITICAL FIX: Ensure picking this space doesn't cause a negative overlap loop
-                    if space_pos > start + self.chunk_overlap:
-                        end = space_pos
-                    # If the space is too close to the start, ignore it and just hard-break at chunk_size
-            
-            chunk_text = text[start:end].strip()
-            
-            if chunk_text:
-                chunk_dict = {
-                    "text": chunk_text,
-                    "chunk_id": chunk_id,
-                    "start_char": start,
-                    "end_char": end,
-                }
-                
-                if metadata:
-                    chunk_dict.update(metadata)
-                
-                chunks.append(chunk_dict)
-                chunk_id += 1
-            
-            # CRITICAL FIX: Prevent the infinite loop OOM crash
-            next_start = end - self.chunk_overlap
-            
-            # If the calculated next start is somehow less than or equal to our current start,
-            # we force it to move forward to the end of the current chunk so it doesn't get stuck.
-            if next_start <= start:
-                start = end
-            else:
-                start = next_start
-        
-        logger.info(f"Created {len(chunks)} chunks from text of length {text_length}")
+
+        while start < len(text):
+            end = start + chunk_size
+
+            if end < len(text):
+                look_ahead = text[end: end + 250]
+                for punct in (".\n", "!\n", "?\n", ". ", "! ", "? "):
+                    idx = look_ahead.find(punct)
+                    if idx != -1:
+                        end = end + idx + len(punct)
+                        break
+
+            chunk = text[start:end].strip()
+            if len(chunk) >= MIN_CHUNK_LEN:
+                chunks.append(chunk)
+
+            start += step
+
+        logger.info(
+            "[PDFProcessor] %d chunks from %d chars (avg %d chars/chunk)",
+            len(chunks),
+            len(text),
+            int(sum(len(c) for c in chunks) / len(chunks)) if chunks else 0,
+        )
         return chunks
-    
-    def process_pdf(self, pdf_path: str, document_id: str = None) -> List[Dict]:
+
+    # ── Public API ─────────────────────────────────────────────────────────────
+
+    def process_pdf(
+        self,
+        pdf_path: str,
+        document_id: Optional[str] = None,
+        chunk_size: int = CHUNK_SIZE,
+        overlap: int    = CHUNK_OVERLAP,
+    ) -> List[Dict]:
         """
-        Complete PDF processing pipeline: extract and chunk
-        
-        Args:
-            pdf_path: Path to PDF file
-            document_id: Optional document identifier
-            
-        Returns:
-            List of processed chunks with metadata
+        Full pipeline: extract text → chunk → return chunk dicts for ChromaDB.
+
+        Each returned dict has:
+            text        : chunk text content
+            document_id : source filename (for ChromaDB ID generation)
+            source      : same as document_id (used for domain filter lookup)
+            chunk_id    : sequential integer index
+            page        : 0 (page tracking not available for this PDF type)
+            char_count  : character length of the chunk
+
+        Usage:
+            processor = PDFProcessor()
+            chunks = processor.process_pdf("data/uploads/NLTK.pdf", "NLTK.pdf")
+            chroma_service.add_documents(chunks, domain="NLP")
         """
-        filename = Path(pdf_path).name
-        
-        # Extract text
-        full_text, page_texts = self.extract_text_from_pdf(pdf_path)
-        
-        if not full_text:
-            raise ValueError(f"No text extracted from PDF: {filename}")
-        
-        # Create chunks with metadata
-        metadata = {
-            "source": filename,
-            "document_id": document_id or filename,
-            "total_pages": len(page_texts)
-        }
-        
-        chunks = self.chunk_text(full_text, metadata)
-        
-        # Add page numbers to chunks (approximate based on character position)
-        chars_per_page = len(full_text) / len(page_texts) if page_texts else len(full_text)
-        for chunk in chunks:
-            estimated_page = int(chunk["start_char"] / chars_per_page) + 1
-            chunk["page"] = min(estimated_page, len(page_texts))
-            
-        # MEMORY OPTIMIZATION: Manually free up RAM used by the massive text strings
-        del full_text
-        del page_texts
-        gc.collect()
-        
-        return chunks
+        path = Path(pdf_path)
+        if not path.exists():
+            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+        doc_id = document_id or path.name
+        logger.info("[PDFProcessor] Processing '%s' (doc_id=%s)", path.name, doc_id)
+
+        raw_text = self.extract_text(pdf_path)
+        if not raw_text.strip():
+            logger.error("[PDFProcessor] No text extracted from '%s'", path.name)
+            return []
+
+        chunks = self._split_into_chunks(raw_text, chunk_size, overlap)
+        if not chunks:
+            logger.error("[PDFProcessor] Chunking produced 0 results for '%s'", path.name)
+            return []
+
+        result = [
+            {
+                "text":        chunk,
+                "document_id": doc_id,
+                "source":      doc_id,
+                "chunk_id":    i,
+                "page":        0,
+                "char_count":  len(chunk),
+            }
+            for i, chunk in enumerate(chunks)
+        ]
+
+        logger.info(
+            "[PDFProcessor] '%s' → %d chunks ready for ChromaDB",
+            path.name,
+            len(result),
+        )
+        return result
