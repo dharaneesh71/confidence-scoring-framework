@@ -70,7 +70,8 @@ class ChromaService:
             for attempt in range(3):
                 try:
                     self.embedding_model = SentenceTransformer(
-                        settings.EMBEDDING_MODEL
+                        settings.EMBEDDING_MODEL,
+                        cache_folder="/app/data/model_cache" 
                     )
                     logger.info("Embedding model loaded successfully")
                     break
@@ -283,7 +284,7 @@ class ChromaService:
         self,
         chunks: List[Dict],
         domain: str    = "general",
-        db_batch_size: int = 250,
+        db_batch_size: int = 150,
     ) -> int:
         """
         Add document chunks to ChromaDB in safe batches.
@@ -335,7 +336,7 @@ class ChromaService:
                     len(texts),
                 )
                 embeddings = self.embedding_model.encode(
-                    texts, batch_size=32, show_progress_bar=False
+                    texts, batch_size=24, show_progress_bar=False
                 )
                 self.collection.add(
                     embeddings=embeddings.tolist(),

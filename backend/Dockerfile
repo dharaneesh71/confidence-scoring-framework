@@ -23,8 +23,6 @@ COPY . .
 # ── Persistent-data directories ───────────────────────────────────────────────
 RUN mkdir -p data/chroma_db data/uploads data/finetuned_model
 
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
-
 # ── Runtime environment defaults ──────────────────────────────────────────────
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
