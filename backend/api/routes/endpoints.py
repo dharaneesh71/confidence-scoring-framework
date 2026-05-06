@@ -68,15 +68,20 @@ from services.chroma_service import ChromaService
 from services.llama_service import LlamaService
 from services.pdf_processor import PDFProcessor
 from services.scoring_service import ScoringService
+from sentence_transformers import SentenceTransformer
+
+import torch
+torch.set_num_threads(1)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+_embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL_PATH)
 # ── Service singletons ─────────────────────────────────────────────────────────
-pdf_processor       = PDFProcessor()
-chroma_service      = ChromaService()
-llama_service       = LlamaService()
-scoring_service     = ScoringService()
+pdf_processor   = PDFProcessor()
+chroma_service  = ChromaService(embedding_model=_embedding_model)
+llama_service   = LlamaService()
+scoring_service = ScoringService(embedding_model=_embedding_model)
 _inference_executor = ThreadPoolExecutor(max_workers=2)
 
 # Maximum characters for the RAG context string sent to the LLM.

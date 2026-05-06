@@ -52,7 +52,7 @@ hf_*/
 *.pt
 *.onnx
 *.safetensors
-models/
+!backend/models/
 weights/
 
 # ===========================

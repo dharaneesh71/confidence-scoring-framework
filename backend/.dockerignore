@@ -34,7 +34,7 @@ errors.py
 testingfile.py
 verify_setup.py
 
-# ── Large model weights — downloaded at runtime via HuggingFace ──────────────
+# ── Large model weights — exclude loose weights; keep bundled model dir ───────
 *.bin
 *.pth
 *.pt
@@ -42,6 +42,9 @@ verify_setup.py
 *.safetensors
 data/finetuned_model/
 hf_*/
+# Re-include the SentenceTransformer model bundled into the image
+!models/
+!models/**
 
 # ── User data — mounted as volumes at runtime ─────────────────────────────────
 data/chroma_db/

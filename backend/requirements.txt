@@ -11,25 +11,28 @@ python-jose[cryptography]==3.3.0
 
 # Vector Database
 chromadb==1.3.4
+
+torch==2.5.0
+sentence-transformers
+
+bitsandbytes==0.49.2
+trl==0.11.1
+peft==0.12.0
+accelerate==0.34.2
+datasets==2.21.0
+evaluate==0.4.3                
 posthog==2.4.2
 
 # NLP & Embeddings
-sentence-transformers==3.1.1
 nltk==3.9.1
-transformers==4.45.1
-datasets==2.21.0
+transformers==4.45.1        
+huggingface-hub==0.25.1
 
 # LLM Integration
-# torch==2.5.0
-huggingface-hub==0.25.1
-peft==0.12.0
-trl==0.11.1
-accelerate==0.34.2
-bitsandbytes==0.49.2
+groq
 
-# Model Evaluation (BLEU / ROUGE) â€” Sprint 5
+# Model Evaluation (BLEU / ROUGE)
 rouge-score==0.1.2
-evaluate==0.4.3
 sacrebleu==2.4.3
 
 # PDF Processing
@@ -37,21 +40,21 @@ PyPDF2==3.0.1
 pypdf==6.10.2
 reportlab==4.2.2
 
-# Session Export â€” Sprint 3
+# Session Export
 aiofiles==24.1.0
 
-# Background Tasks & Scheduling â€” Sprint 4/5
+# Background Tasks & Scheduling
 apscheduler==3.10.4
 celery==5.4.0
 redis==5.1.1
 
-# Real-time Progress Bar â€” Sprint 4
+# Real-time Progress Bar
 websockets==13.1
 
-# Email Notifications â€” Sprint 3
+# Email Notifications
 fastapi-mail==1.4.1
 
-# Rate Limiting â€” Sprint 3
+# Rate Limiting
 slowapi==0.1.9
 
 # Utilities
@@ -61,8 +64,6 @@ pydantic-settings==2.5.2
 numpy==1.26.4
 requests==2.32.3
 httpx==0.27.2
-
-groq
 
 # Development & Testing
 pytest==8.3.3
