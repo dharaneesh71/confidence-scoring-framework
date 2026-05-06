@@ -3,26 +3,44 @@ name: Build & Push Backend
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:    
-  
+  workflow_dispatch:
+
 jobs:
   build:
-    runs-on: ubuntu-latest  
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Download embedding model into build context
+        run: |
+          pip install sentence-transformers
+          python -c "
+          from sentence_transformers import SentenceTransformer
+          print('Downloading all-MiniLM-L6-v2...')
+          model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+          model.save('./backend/models/all-MiniLM-L6-v2')
+          print('Model saved successfully!')
+          "
+
+      - name: Verify model files
+        run: ls -la ./backend/models/all-MiniLM-L6-v2/
 
       - name: Login to VT Registry
         run: |
           docker login container.cs.vt.edu \
             -u ${{ secrets.VT_REGISTRY_USER }} \
             -p ${{ secrets.VT_REGISTRY_TOKEN }}
-            
+
       - name: Build and Push
         run: |
           docker build \
-            --no-cache \
             -t container.cs.vt.edu/jaideepm21/confid.ai/backend:latest \
             ./backend
           docker push \
