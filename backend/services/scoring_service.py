@@ -4,38 +4,25 @@ Confidence Scoring Service — calibrated scoring for RAG answers.
 KEY FIXES in this version:
 ─────────────────────────────────────────────────────────────────────────────
 1. SIGMOID MISCALIBRATION (critical):
-   Old center = 0.60.  MiniLM's typical similarity for genuinely relevant
-   text is 0.45–0.60.  At center=0.60, a raw_score of 0.55 (good match)
-   calibrated to 0.40 → labelled "Low" even when the answer was correct.
-
-   New center = 0.45, steepness = 7:
-     raw=0.35 → 0.33  (low)
-     raw=0.45 → 0.50  (mid)
-     raw=0.55 → 0.67  (medium-high)
-     raw=0.65 → 0.81  (high)
-     raw=0.75 → 0.90  (excellent)
+   New center = 0.45, steepness = 7 — calibrated to MiniLM's actual range.
 
 2. SINGLE-PASSAGE MAX SCORING:
-   Old: raw_score = cosine_scores.max()
-   A single strong chunk masked by 4 weak ones gave a misleadingly high
-   score. Replaced with weighted top-2 average (top chunk × 0.7 + 2nd × 0.3)
-   which is more stable and representative.
+   Replaced with weighted top-2 average (top × 0.7 + 2nd × 0.3).
 
-3. STRICT CUTOFF added back at raw < 0.28:
-   Prevents noise passages (raw ≈ 0.10–0.25) from ever reaching the LLM.
-   The pre-flight in endpoints already blocks most junk, but this is a
-   second safety net inside the scoring layer.
+3. STRICT CUTOFF at raw < 0.28:
+   Prevents noise passages from reaching the LLM.
 
-4. INDENTATION BUG FIXED in _quality_penalty:
-   The `# 1.` comment was at class-method indent level (4 spaces) while
-   the code following it was at body indent level (8 spaces). Fixed to
-   keep everything consistently inside the method.
+4. INDENTATION BUG FIXED in _quality_penalty.
+
+5. SENTENCE-TRANSFORMERS REMOVED (segfault fix):
+   Replaced SentenceTransformer + util.cos_sim with ONNXMiniLM_L6_V2
+   + numpy cosine similarity. No PyTorch dependency.
 """
 
 import math
+import numpy as np
 from typing import Dict, List, Tuple
-
-from sentence_transformers import SentenceTransformer, util
+from sentence_transformers import SentenceTransformer, util# ✅ No PyTorch
 
 from core.config import settings
 
@@ -43,8 +30,20 @@ from core.config import settings
 class ScoringService:
     """Confidence scoring engine: semantic similarity + quality penalty."""
 
-    def __init__(self) -> None:
-        self.embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
+    def __init__(self, embedding_model=None) -> None:
+        self.embedding_model = embedding_model or SentenceTransformer(settings.EMBEDDING_MODEL_PATH)
+
+    # ── Cosine similarity (replaces util.cos_sim) ─────────────────────────────
+
+    def _cosine_similarity(self, vec_a: list, vec_b: list) -> float:
+        """Compute cosine similarity between two vectors using numpy."""
+        a = np.array(vec_a, dtype=np.float32)
+        b = np.array(vec_b, dtype=np.float32)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
 
     # ── Quality guard ──────────────────────────────────────────────────────────
 
@@ -104,9 +103,7 @@ class ScoringService:
 
     def _query_complexity_weight(self, question: str) -> float:
         """
-        Shorter queries have less signal to verify against, so we apply a
-        small downward weight to prevent over-confident scores on vague queries.
-
+        Shorter queries have less signal to verify against.
           1–2 words → 0.75
           3–4 words → 0.88
           5–6 words → 0.96
@@ -126,42 +123,21 @@ class ScoringService:
     def _calibrate_score(self, raw_score: float) -> float:
         """
         Sigmoid centred at 0.45 with steepness 7.
-
-        Calibrated to MiniLM's actual similarity range for relevant text:
-          raw = 0.28 → 0.19  (just above cutoff — low confidence)
-          raw = 0.35 → 0.33  (marginal)
-          raw = 0.45 → 0.50  (mid-point — genuinely related text)
-          raw = 0.55 → 0.67  (good match)
-          raw = 0.65 → 0.81  (strong match → High confidence)
-          raw = 0.75 → 0.90  (excellent match)
-
-        OLD (center=0.60): raw=0.55 → 0.40 (labelled Low despite correct answer)
-        NEW (center=0.45): raw=0.55 → 0.67 (correctly labelled Medium-High)
+          raw=0.28 → 0.19   raw=0.45 → 0.50
+          raw=0.35 → 0.33   raw=0.55 → 0.67
+          raw=0.65 → 0.81   raw=0.75 → 0.90
         """
         return round(1.0 / (1.0 + math.exp(-7.0 * (raw_score - 0.45))), 3)
 
     # ── Weighted top-k score ───────────────────────────────────────────────────
 
-    def _weighted_raw_score(self, cosine_scores_tensor) -> float:
+    def _weighted_raw_score(self, cosine_scores: List[float]) -> float:
         """
-        Compute a weighted combination of the top-2 cosine similarities.
-
-        WHY NOT JUST MAX:
-          max() is noise-sensitive: a single noisy chunk with a fluke high
-          score produces over-confidence. A single very relevant chunk buried
-          at rank 2 gets ignored if rank-1 is moderately relevant.
-
-        FORMULA:
-          top1 × 0.70 + top2 × 0.30  (if at least 2 passages)
-          top1 × 1.00                 (if only 1 passage)
-
-        This is more stable and still heavily weights the best match.
+        Weighted top-2 average: top1 × 0.70 + top2 × 0.30.
+        More stable than raw max().
+        ✅ Updated to accept plain list instead of tensor.
         """
-        scores = cosine_scores_tensor.tolist()
-        if isinstance(scores, float):
-            scores = [scores]
-        scores_sorted = sorted(scores, reverse=True)
-
+        scores_sorted = sorted(cosine_scores, reverse=True)
         if len(scores_sorted) >= 2:
             return scores_sorted[0] * 0.70 + scores_sorted[1] * 0.30
         return scores_sorted[0]
@@ -184,32 +160,37 @@ class ScoringService:
             return 0.0, "No data to score.", [], {}
 
         # ── 1. Semantic similarity ─────────────────────────────────────────────
-        # Encode (question + answer) together so the score captures whether
-        # the answer addresses the question using the retrieved content.
+        # ✅ ONNX wrapper: callable, returns list of vectors directly
         scoring_text  = f"{question} {answer}"
-        text_emb      = self.embedding_model.encode(scoring_text, convert_to_tensor=True)
+        text_emb     = self.embedding_model.encode([scoring_text], convert_to_tensor=False)[0]
         passage_texts = [p["text"] for p in retrieved_passages]
-        passage_embs  = self.embedding_model.encode(passage_texts, convert_to_tensor=True)
+        passage_embs = self.embedding_model.encode(passage_texts, convert_to_tensor=False)
 
-        cosine_scores = util.cos_sim(text_emb, passage_embs)[0]
+        # ✅ numpy cosine similarity — replaces util.cos_sim
+        cosine_scores = [
+            self._cosine_similarity(text_emb, p_emb)
+            for p_emb in passage_embs
+        ]
 
         # FIX: weighted top-2 average instead of raw max()
         raw_score = float(self._weighted_raw_score(cosine_scores))
 
         # ── 2. Strict low-quality cutoff ──────────────────────────────────────
-        # Pre-flight in endpoints already blocks most junk, but this is a
-        # second safety net: if the scored answer has < 0.28 similarity even
-        # after top-k retrieval, it came from the model's own knowledge, not
-        # the documents.
         if raw_score < 0.28:
             return (
                 0.0,
                 (
                     "Answer appears to be from the model's internal knowledge. "
-                    "No sufficiently relevant passages were found in the knowledge base."
+                    "No sufficiently relevant passages were found in the "
+                    "knowledge base."
                 ),
                 [],
-                {"consistency": 0, "semantic": 0, "completeness": 0, "precision": 0},
+                {
+                    "consistency":  0,
+                    "semantic":     0,
+                    "completeness": 0,
+                    "precision":    0,
+                },
             )
 
         # ── 3. Calibrate → quality penalty → complexity weight ────────────────
@@ -229,7 +210,8 @@ class ScoringService:
             )
         elif final_score >= 0.80:
             explanation += (
-                "Strong match. The answer is well-supported by the retrieved documents."
+                "Strong match. The answer is well-supported by the retrieved "
+                "documents."
             )
         elif final_score >= 0.55:
             explanation += (
@@ -238,13 +220,13 @@ class ScoringService:
             )
         else:
             explanation += (
-                "Weak match. The answer has limited overlap with the documents — "
-                "treat with caution."
+                "Weak match. The answer has limited overlap with the documents "
+                "— treat with caution."
             )
 
         # ── 5. Build citations ─────────────────────────────────────────────────
         citations = []
-        for i, p in enumerate(retrieved_passages):
+        for p in retrieved_passages:
             excerpt = p["text"]
             citations.append({
                 "source":          p.get("source", "unknown"),

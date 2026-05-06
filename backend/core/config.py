@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
     # Embeddings
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-
+    EMBEDDING_MODEL_PATH: str = "/app/models/all-MiniLM-L6-v2"
     # Retrieval
     TOP_K_RETRIEVAL: int = 3
 

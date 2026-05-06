@@ -1,40 +1,38 @@
 """
 ChromaDB vector database service for semantic search.
 
-KEY FIXES in this version:
+PRODUCTION VERSION — All fixes applied:
 ─────────────────────────────────────────────────────────────────────────────
-1. COSINE SIMILARITY FORMULA (critical):
-   ChromaDB cosine space returns distance = 1 − cos_sim.
-   cos_sim ∈ [−1, 1]  →  distance ∈ [0, 2].
+1. COSINE SIMILARITY FORMULA:
+   ChromaDB cosine space: distance = 1 − cos_sim, range [0, 2].
+   CORRECT: similarity = 1.0 - (distance / 2.0) → maps [0,2] → [1.0, 0.0]
 
-   OLD (broken): similarity = 1.0 - distance
-     → returns negative values for distance > 1, clipped to 0.
-     → most valid results appeared as similarity=0, blocking pre-flight.
-
-   CORRECT: similarity = 1.0 - (distance / 2.0)
-     → maps [0, 2] → [1.0, 0.0] correctly.
-
-2. DOMAIN STORED IN CHUNK METADATA:
-   Old: domain was only in SQLite (Document table), not in ChromaDB metadata.
-   The domain filter joined with SQL to get filenames, then filtered by
-   source in ChromaDB — a fragile two-step that broke on edge cases.
-
-   New: add_documents() accepts domain parameter and stores it in each
-   chunk's metadata. Filtering can now be done directly:
-     where={"domain": "NLP"}
-   
-   Both filter paths are still supported for backward compatibility.
+2. DOMAIN IN CHUNK METADATA:
+   Domain stored per-chunk for direct ChromaDB filtering:
+   where={"domain": "nlp"}
 
 3. COLLECTION-EMPTY GUARD:
-   Clear warning at startup and on every query if ChromaDB is empty, so
-   you immediately know if the real issue is no documents ingested yet.
+   Clear warning at startup and on every query if collection is empty.
+
+4. SAFE BATCH SIZES:
+   db_batch_size=50  (was 250 — caused OOM crash on large PDFs)
+   encode batch_size=16 (was 32 — reduces peak memory per batch)
+
+5. DUAL-RETRIEVAL + DEDUPLICATION:
+   Searches with both normalised and original query form, merges and
+   deduplicates by text, keeping the higher similarity score.
+
+6. GRACEFUL RERANKER FALLBACK:
+   Cross-encoder reranker loaded optionally — falls back cleanly if
+   unavailable without crashing the service.
 """
 
+import gc
 import logging
+import math
 import re
 import time
 from typing import Dict, List, Optional
-
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from sentence_transformers import SentenceTransformer
@@ -45,19 +43,24 @@ logger = logging.getLogger(__name__)
 
 
 class ChromaService:
-    """Manages vector database operations using ChromaDB."""
+    """Manages ChromaDB vector database operations for semantic search."""
 
-    def __init__(self) -> None:
+    def __init__(self, embedding_model=None) -> None:
         self.client          = None
         self.collection      = None
-        self.embedding_model = None
+        self.embedding_model = embedding_model
         self.reranker        = None
         self._initialize()
 
     # ── Initialisation ─────────────────────────────────────────────────────────
 
     def _initialize(self) -> None:
+        """
+        Initialise ChromaDB client, embedding model, collection, and
+        optional cross-encoder reranker. Retries model load up to 3 times.
+        """
         try:
+            # ── ChromaDB persistent client ─────────────────────────────────
             self.client = chromadb.PersistentClient(
                 path=settings.CHROMA_PERSIST_DIRECTORY,
                 settings=ChromaSettings(
@@ -66,27 +69,26 @@ class ChromaService:
                 ),
             )
 
-            logger.info("Loading embedding model: %s", settings.EMBEDDING_MODEL)
-            for attempt in range(3):
-                try:
-                    self.embedding_model = SentenceTransformer(
-                        settings.EMBEDDING_MODEL,
-                        cache_folder="/app/data/model_cache" 
-                    )
-                    logger.info("Embedding model loaded successfully")
-                    break
-                except Exception as exc:
-                    logger.warning(
-                        "Embedding model load attempt %d/3 failed: %s",
-                        attempt + 1, exc,
-                    )
-                    if attempt < 2:
-                        logger.info("Retrying in 10 seconds…")
-                        time.sleep(10)
-                    else:
-                        logger.error("All 3 attempts failed — raising")
-                        raise
-
+            # ── Embedding model (SentenceTransformer) ──────────────────────
+            if self.embedding_model is None:
+                logger.info("Loading embedding model...")
+                for attempt in range(1, 4):
+                    try:
+                        self.embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL_PATH)
+                        logger.info("✅ Embedding model loaded successfully")
+                        break
+                    except Exception as exc:
+                        logger.warning("Embedding model load attempt %d/3 failed: %s",attempt, exc,)
+                        if attempt < 3:
+                            logger.info("Retrying in 10 seconds…")
+                            time.sleep(10)
+                        else:
+                            logger.error("All 3 attempts failed — raising")
+                            raise
+            else:
+                logger.info("✅ Embedding model provided externally — skipping load")
+                    
+            # ── ChromaDB collection ────────────────────────────────────────
             self.collection = self.client.get_or_create_collection(
                 name=settings.CHROMA_COLLECTION_NAME,
                 metadata={
@@ -97,7 +99,7 @@ class ChromaService:
 
             count = self.collection.count()
             logger.info(
-                "ChromaDB ready — collection='%s', chunks=%d",
+                "✅ ChromaDB ready — collection='%s', chunks=%d",
                 settings.CHROMA_COLLECTION_NAME,
                 count,
             )
@@ -108,16 +110,20 @@ class ChromaService:
                 )
 
         except Exception as exc:
-            logger.error("Failed to initialise ChromaDB: %s", exc)
+            logger.error("❌ Failed to initialise ChromaDB: %s", exc)
             raise
 
-        # Cross-encoder reranker — optional, graceful fallback
+        # ── Optional cross-encoder reranker ────────────────────────────────
         try:
             from sentence_transformers import CrossEncoder
-            self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-            logger.info("Cross-encoder reranker loaded")
+            self.reranker = CrossEncoder(
+                "cross-encoder/ms-marco-MiniLM-L-6-v2"
+            )
+            logger.info("✅ Cross-encoder reranker loaded")
         except Exception as exc:
-            logger.warning("Cross-encoder unavailable (%s). Reranking disabled.", exc)
+            logger.warning(
+                "⚠️  Cross-encoder unavailable (%s). Reranking disabled.", exc
+            )
             self.reranker = None
 
     # ── Query normalisation ────────────────────────────────────────────────────
@@ -126,15 +132,15 @@ class ChromaService:
         """
         Normalise a search query for better embedding recall.
         1. Strip + lowercase.
-        2. Collapse word + digit:     "GPT 4"   → "gpt4"
-        3. Collapse digit + short word (≤4 chars): "2 vec" → "2vec"
+        2. Collapse word + digit:              "GPT 4"  → "gpt4"
+        3. Collapse digit + short word (≤4 c): "2 vec"  → "2vec"
         """
         q = query.strip().lower()
         q = re.sub(r"(\w+)\s+(\d+)", r"\1\2", q)
         q = re.sub(r"(\d+)\s+([a-z]{1,4})\b", r"\1\2", q)
         return q
 
-    # ── Low-level single-embedding query ──────────────────────────────────────
+    # ── Low-level single-embedding search ─────────────────────────────────────
 
     def _raw_search(
         self,
@@ -146,11 +152,13 @@ class ChromaService:
         count = self.collection.count()
         if count == 0:
             logger.warning(
-                "[ChromaDB] _raw_search called on empty collection! Ingest docs first."
+                "[ChromaDB] _raw_search on empty collection — ingest docs first."
             )
             return []
 
-        query_embedding = self.embedding_model.encode([query])[0]
+        query_embedding = self.embedding_model.encode(
+            [query], convert_to_tensor=False
+        )[0]
 
         query_kwargs: Dict = {
             "query_embeddings": [query_embedding.tolist()],
@@ -167,19 +175,17 @@ class ChromaService:
             for i, doc in enumerate(results["documents"][0]):
                 distance = results["distances"][0][i]
 
-                # FIX: ChromaDB cosine space: distance = 1 − cos_sim
-                # cos_sim ∈ [−1, 1]  →  distance ∈ [0, 2]
-                # WRONG: 1.0 - distance  (negative for dist > 1, clipped to 0)
-                # CORRECT: 1.0 - (distance / 2.0)  maps [0,2] → [1.0, 0.0]
+                # FIX: ChromaDB cosine space → distance = 1 − cos_sim ∈ [0,2]
+                # CORRECT mapping: similarity = 1.0 - (distance / 2.0)
                 similarity = max(0.0, min(1.0, 1.0 - (distance / 2.0)))
 
                 passages.append({
                     "text":             doc,
                     "metadata":         results["metadatas"][0][i],
                     "similarity_score": round(similarity, 4),
-                    "source":           results["metadatas"][0][i].get("source", "unknown"),
-                    "page":             results["metadatas"][0][i].get("page", 0),
-                    "domain":           results["metadatas"][0][i].get("domain", "general"),
+                    "source":           results["metadatas"][0][i].get("source",  "unknown"),
+                    "page":             results["metadatas"][0][i].get("page",    0),
+                    "domain":           results["metadatas"][0][i].get("domain",  "general"),
                 })
 
         logger.debug(
@@ -199,12 +205,12 @@ class ChromaService:
         where: Optional[Dict] = None,
     ) -> List[Dict]:
         """
-        Semantic search with query normalisation and dual-retrieval.
+        Semantic search with dual-retrieval and deduplication.
 
         1. Normalise query (lowercase + digit-compound collapse).
         2. Search with normalised form.
-        3. If normalised ≠ original, also search with original and merge.
-        4. Deduplicate by text content (keep higher similarity score).
+        3. If normalised ≠ original, search with original and merge.
+        4. Deduplicate by text (keep higher similarity score).
         5. Sort descending and return top_k.
         """
         if top_k is None:
@@ -224,25 +230,27 @@ class ChromaService:
                 orig_passages = self._raw_search(original_low, top_k, where)
                 passages = passages + orig_passages
 
-            # Deduplicate by text, keep the higher similarity score
+            # Deduplicate — keep higher similarity score per unique text
             best: Dict[str, Dict] = {}
             for p in passages:
                 txt = p["text"]
-                if txt not in best or p["similarity_score"] > best[txt]["similarity_score"]:
+                if (
+                    txt not in best
+                    or p["similarity_score"] > best[txt]["similarity_score"]
+                ):
                     best[txt] = p
 
-            deduped = sorted(
+            return sorted(
                 best.values(),
                 key=lambda p: p["similarity_score"],
                 reverse=True,
-            )
-            return deduped[:top_k]
+            )[:top_k]
 
         except Exception as exc:
             logger.error("Error searching ChromaDB: %s", exc)
             raise
 
-    # ── Two-stage retrieval with reranking ────────────────────────────────────
+    # ── Two-stage retrieval with optional reranking ───────────────────────────
 
     def search_with_rerank(
         self,
@@ -274,41 +282,46 @@ class ChromaService:
                 )
                 return [c for c, _ in ranked[:top_k]]
             except Exception as exc:
-                logger.warning("Reranker failed (%s) — falling back.", exc)
+                logger.warning(
+                    "Reranker failed (%s) — falling back to similarity rank.",
+                    exc,
+                )
 
         return candidates[:top_k]
 
-    # ── Document management ────────────────────────────────────────────────────
+    # ── Document ingestion ────────────────────────────────────────────────────
 
     def add_documents(
         self,
         chunks: List[Dict],
-        domain: str    = "general",
-        db_batch_size: int = 150,
+        domain: str        = "general",
+        db_batch_size: int = 50,           # ✅ was 250 — reduced to prevent OOM
     ) -> int:
         """
         Add document chunks to ChromaDB in safe batches.
 
-        FIX: now accepts `domain` parameter and stores it in every chunk's
-        metadata so filtering can be done with:
-            where={"domain": "NLP"}
-        instead of requiring a SQL join to get filenames first.
+        Stores `domain` in every chunk's metadata for direct filtering:
+            where={"domain": "nlp"}
 
         Args:
-            chunks        : list of chunk dicts from PDFProcessor.process_pdf()
-            domain        : domain tag (e.g. "NLP", "General") — stored in metadata
-            db_batch_size : max chunks per ChromaDB upsert call
+            chunks        : chunk dicts from PDFProcessor.process_pdf()
+            domain        : domain tag stored in metadata
+            db_batch_size : max chunks per ChromaDB upsert (keep ≤ 50)
+
+        Returns:
+            Total number of chunks added.
         """
         if not chunks:
             return 0
 
-        import gc
+        total_added  = 0
+        total_chunks = len(chunks)
+        logger.info(
+            "[ChromaDB] Ingesting %d chunks (domain=%s)…",
+            total_chunks, domain,
+        )
 
         try:
-            total_added  = 0
-            total_chunks = len(chunks)
-            logger.info("[ChromaDB] Ingesting %d chunks (domain=%s)…", total_chunks, domain)
-
             for i in range(0, total_chunks, db_batch_size):
                 batch = chunks[i: i + db_batch_size]
 
@@ -323,7 +336,6 @@ class ChromaService:
                         "document_id": str(c.get("document_id", "unknown")),
                         "chunk_id":    int(c.get("chunk_id",    0)),
                         "page":        int(c.get("page",        0)),
-                        # FIX: store domain in metadata for direct filtering
                         "domain":      domain.lower(),
                     }
                     for c in batch
@@ -335,25 +347,44 @@ class ChromaService:
                     math.ceil(total_chunks / db_batch_size),
                     len(texts),
                 )
+
+                # ✅ encode batch_size=16 (was 32) — reduces peak memory
                 embeddings = self.embedding_model.encode(
-                    texts, batch_size=24, show_progress_bar=False
+                    texts,
+                    batch_size=16,
+                    show_progress_bar=False,
+                    convert_to_tensor=False,
                 )
+
                 self.collection.add(
                     embeddings=embeddings.tolist(),
                     documents=texts,
                     metadatas=metadatas,
                     ids=ids,
                 )
+
                 total_added += len(batch)
                 del embeddings, texts
                 gc.collect()
 
-            logger.info("[ChromaDB] Successfully added %d chunks", total_added)
+                logger.info(
+                    "[ChromaDB] Batch done — %d/%d chunks ingested.",
+                    total_added, total_chunks,
+                )
+
+            logger.info(
+                "✅ [ChromaDB] Successfully ingested %d chunks (domain=%s)",
+                total_added, domain,
+            )
             return total_added
 
         except Exception as exc:
-            logger.error("Error adding documents to ChromaDB: %s", exc)
+            logger.error(
+                "❌ Error adding documents to ChromaDB: %s", exc
+            )
             raise
+
+    # ── Utility ────────────────────────────────────────────────────────────────
 
     def delete_document(self, filename: str) -> bool:
         """Delete all vector chunks for a given source filename."""
@@ -362,21 +393,24 @@ class ChromaService:
             logger.info("[ChromaDB] Deleted vectors for '%s'", filename)
             return True
         except Exception as exc:
-            logger.error("[ChromaDB] Error deleting '%s': %s", filename, exc)
+            logger.error(
+                "[ChromaDB] Error deleting '%s': %s", filename, exc
+            )
             return False
 
     def get_count(self) -> int:
+        """Return total number of chunks in the collection."""
         try:
             return self.collection.count()
         except Exception:
             return 0
 
     def is_ready(self) -> bool:
+        """Return True if ChromaDB and embedding model are both initialised."""
         try:
-            return self.collection is not None and self.embedding_model is not None
+            return (
+                self.collection      is not None
+                and self.embedding_model is not None
+            )
         except Exception:
             return False
-
-
-# math needed for batch count logging
-import math

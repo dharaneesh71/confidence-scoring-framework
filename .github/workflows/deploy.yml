@@ -1,0 +1,28 @@
+name: Build & Push Backend
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:    
+  
+jobs:
+  build:
+    runs-on: ubuntu-latest  
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Login to VT Registry
+        run: |
+          docker login container.cs.vt.edu \
+            -u ${{ secrets.VT_REGISTRY_USER }} \
+            -p ${{ secrets.VT_REGISTRY_TOKEN }}
+
+      - name: Build and Push
+        run: |
+          docker build \
+            -t container.cs.vt.edu/jaideepm21/confid.ai/backend:latest \
+            ./backend
+          docker push \
+            container.cs.vt.edu/jaideepm21/confid.ai/backend:latest
