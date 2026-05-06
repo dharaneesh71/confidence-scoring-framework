@@ -18,10 +18,11 @@ jobs:
           docker login container.cs.vt.edu \
             -u ${{ secrets.VT_REGISTRY_USER }} \
             -p ${{ secrets.VT_REGISTRY_TOKEN }}
-
+            
       - name: Build and Push
         run: |
           docker build \
+            --no-cache \
             -t container.cs.vt.edu/jaideepm21/confid.ai/backend:latest \
             ./backend
           docker push \

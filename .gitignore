@@ -53,6 +53,11 @@ hf_*/
 *.onnx
 *.safetensors
 !backend/models/
+!backend/models/**
+!backend/models/**/*.bin
+!backend/models/**/*.safetensors
+!backend/models/**/*.pt
+!backend/models/**/*.onnx
 weights/
 
 # ===========================
