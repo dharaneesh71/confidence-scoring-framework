@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: confidai-backend
+  namespace: confidence-scoring-framework
+  labels:
+    workload.user.cattle.io/workloadselector: apps.deployment-confidence-scoring-framework-confidai-backend
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      workload.user.cattle.io/workloadselector: apps.deployment-confidence-scoring-framework-confidai-backend
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        workload.user.cattle.io/workloadselector: apps.deployment-confidence-scoring-framework-confidai-backend
+      namespace: confidence-scoring-framework
+    spec:
+      containers:
+        - env:
+            - name: LLAMA_MODEL_NAME
+              value: meta-llama/Llama-3.2-3B-Instruct
+            - name: EMBEDDING_MODEL
+              value: tfidf
+            - name: ALLOWED_ORIGINS
+              value: '["*"]'
+            - name: OMP_NUM_THREADS
+              value: '1'
+            - name: MKL_NUM_THREADS
+              value: '1'
+            - name: GROQ_MODEL
+              value: llama-3.3-70b-versatile
+            - name: TOKENIZERS_PARALLELISM
+              value: 'false'
+            - name: OPENBLAS_NUM_THREADS
+              value: '1'
+            - name: TRANSFORMERS_OFFLINE
+              value: '1'
+            - name: HF_HUB_OFFLINE
+              value: '1'
+            - name: HF_DATASETS_OFFLINE
+              value: '1'
+          envFrom:
+            - secretRef:
+                name: confidai-env
+                optional: false
+          image: container.cs.vt.edu/jaideepm21/confid.ai/backend:latest
+          imagePullPolicy: Always
+          name: container-0
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          resources:
+            limits:
+              cpu: '16'
+              memory: 32Gi
+            requests:
+              cpu: '8'
+              memory: 16Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: false
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /app/data
+              name: confidai-data
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+        - name: confid-registry
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: confidai-data
+          persistentVolumeClaim:
+            claimName: confidai-data
