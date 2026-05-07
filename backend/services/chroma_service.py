@@ -19,7 +19,6 @@ PRODUCTION VERSION — TF-IDF embedding (no PyTorch):
 """
 
 import gc
-import joblib
 import logging
 import math
 import os
@@ -29,7 +28,7 @@ from typing import Dict, List, Optional
 import chromadb
 import numpy as np
 from chromadb.config import Settings as ChromaSettings
-from sklearn.feature_extraction.text import TfidfVectorizer
+import hashlib
 
 from core.config import settings
 
@@ -62,23 +61,7 @@ class ChromaService:
             )
 
             # ── Load or create TF-IDF vectorizer ──────────────────────────
-            if os.path.exists(VECTORIZER_PATH):
-                logger.info("Loading TF-IDF vectorizer from disk: %s", VECTORIZER_PATH)
-                self.vectorizer = joblib.load(VECTORIZER_PATH)
-                self._is_fitted = True
-                logger.info("✅ TF-IDF vectorizer loaded (vocabulary ready)")
-            else:
-                logger.info("Creating new TF-IDF vectorizer (will fit on first upload)...")
-                self.vectorizer = TfidfVectorizer(
-                    max_features=384,
-                    ngram_range=(1, 2),
-                    sublinear_tf=True,
-                    strip_accents="unicode",
-                    analyzer="word",
-                    min_df=1,
-                )
-                self._is_fitted = False
-                logger.info("✅ TF-IDF vectorizer created — upload documents to fit")
+            logger.info("✅ Hash embedding ready — no native ML libraries")
 
             # ── ChromaDB collection ────────────────────────────────────────
             self.collection = self.client.get_or_create_collection(
@@ -264,7 +247,6 @@ class ChromaService:
 
             # Save fitted vectorizer to persistent volume
             os.makedirs(os.path.dirname(VECTORIZER_PATH), exist_ok=True)
-            joblib.dump(self.vectorizer, VECTORIZER_PATH)
             logger.info("✅ Vectorizer fitted and saved to %s", VECTORIZER_PATH)
 
             # ── Add in batches ─────────────────────────────────────────────
