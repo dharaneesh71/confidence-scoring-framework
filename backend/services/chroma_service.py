@@ -16,6 +16,8 @@ PRODUCTION VERSION — Hash embedding + ChromaDB 0.5.x (no Rust backend):
 5. SAFE BATCH SIZES: db_batch_size=50 prevents OOM on large PDFs.
 
 6. DUAL-RETRIEVAL + DEDUPLICATION: Normalised + original query merged.
+
+7. AUTO-RESET: Detects old chromadb 1.x data format and resets cleanly.
 """
 
 import gc
@@ -49,6 +51,7 @@ class ChromaService:
 
     def _initialize(self) -> None:
         try:
+            # ── ChromaDB persistent client ─────────────────────────────────
             self.client = chromadb.PersistentClient(
                 path=settings.CHROMA_PERSIST_DIRECTORY,
                 settings=ChromaSettings(
@@ -62,16 +65,34 @@ class ChromaService:
                 self.EMBED_DIM,
             )
 
-            self.collection = self.client.get_or_create_collection(
-                name=settings.CHROMA_COLLECTION_NAME,
-                metadata={
-                    "description": "Ground truth documents for confidence scoring",
-                    "hnsw:space":  "cosine",
-                },
-            )
+            # ── ChromaDB collection — auto-reset if old 1.x format ────────
+            try:
+                self.collection = self.client.get_or_create_collection(
+                    name=settings.CHROMA_COLLECTION_NAME,
+                    metadata={
+                        "description": "Ground truth documents for confidence scoring",
+                        "hnsw:space":  "cosine",
+                    },
+                )
+            except Exception as exc:
+                if "_type" in str(exc) or "KeyError" in str(exc):
+                    logger.warning(
+                        "⚠️  Old ChromaDB 1.x format detected — "
+                        "resetting to 0.5.x format..."
+                    )
+                    self.client.reset()
+                    self.collection = self.client.get_or_create_collection(
+                        name=settings.CHROMA_COLLECTION_NAME,
+                        metadata={
+                            "description": "Ground truth documents for confidence scoring",
+                            "hnsw:space":  "cosine",
+                        },
+                    )
+                    logger.info("✅ ChromaDB reset — fresh collection ready")
+                else:
+                    raise
 
-            # ✅ Wrapped in try/except — chromadb Rust backend segfaults here
-            # on some Linux nodes. Non-fatal: collection still usable.
+            # ── Collection count (non-fatal) ───────────────────────────────
             try:
                 count = self.collection.count()
                 logger.info(
@@ -84,17 +105,14 @@ class ChromaService:
                         "Upload documents via the Admin panel before querying."
                     )
             except Exception as exc:
-                logger.warning(
-                    "ChromaDB count failed (non-fatal): %s", exc
-                )
-                logger.info(
-                    "✅ ChromaDB collection created — ready for documents"
-                )
+                logger.warning("ChromaDB count failed (non-fatal): %s", exc)
+                logger.info("✅ ChromaDB collection ready for documents")
 
         except Exception as exc:
             logger.error("❌ Failed to initialise ChromaDB: %s", exc)
             raise
 
+        # ── Reranker disabled ──────────────────────────────────────────────
         self.reranker = None
         logger.info("Reranker disabled (hash-embedding mode)")
 
