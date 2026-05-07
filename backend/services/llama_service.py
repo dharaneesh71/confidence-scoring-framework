@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Optional
 
 from groq import Groq
-from huggingface_hub import login
 
 from core.config import settings
 
@@ -46,13 +45,6 @@ class LlamaService:
 
             self._client = Groq(api_key=api_key)
             logger.info("Groq client initialised — model: %s", self._GROQ_MODEL)
-
-            if settings.HUGGINGFACE_TOKEN:
-                try:
-                    login(token=settings.HUGGINGFACE_TOKEN)
-                    logger.info("HuggingFace login successful")
-                except Exception:
-                    logger.warning("HuggingFace login failed — not needed for Groq")
 
         except Exception:
             logger.exception("Failed to initialise LlamaService (Groq)")
