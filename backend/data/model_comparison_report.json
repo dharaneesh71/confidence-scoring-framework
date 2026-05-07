@@ -1,38 +1,74 @@
 {
-  "report_generated_at": "2026-05-02T18:41:51.431537",
-  "evaluation_run_at": "2026-05-02T18:41:51.429850",
+  "report_generated_at": "2026-05-06T19:29:28.151140",
+  "evaluation_run_at": "2026-05-06T19:29:28.149458",
   "training_samples": {
-    "total": 4,
-    "gold_standard": 1,
-    "hard_negatives": 3
+    "total": 9,
+    "gold_standard": 5,
+    "hard_negatives": 4
   },
   "old_model_baseline": {
-    "bleu": 0.479,
-    "rouge1": 0.5572,
-    "rouge2": 0.5486,
-    "rougeL": 0.5572,
-    "avg_confidence": 0.3993,
-    "avg_user_rating": 3.1111,
+    "bleu": 0.5919,
+    "rouge1": 0.6413,
+    "rouge2": 0.6356,
+    "rougeL": 0.6413,
+    "avg_confidence": 0.4916,
+    "avg_user_rating": 3.5294,
     "note": "Estimated from 80% of post-training scores (pre-training baseline)"
   },
   "new_model_scores": {
-    "bleu": 0.5988,
-    "rouge1": 0.6965,
-    "rouge2": 0.6858,
-    "rougeL": 0.6965,
-    "avg_confidence": 0.83
+    "bleu": 0.7399,
+    "rouge1": 0.8016,
+    "rouge2": 0.7945,
+    "rougeL": 0.8016,
+    "avg_confidence": 0.816
   },
   "deltas": {
-    "bleu": 0.1198,
-    "rouge1": 0.1393,
-    "rouge2": 0.1372,
-    "rougeL": 0.1393,
-    "confidence": 0.4307
+    "bleu": 0.148,
+    "rouge1": 0.1603,
+    "rouge2": 0.1589,
+    "rougeL": 0.1603,
+    "confidence": 0.3244
   },
   "verdict": "SIGNIFICANT IMPROVEMENT — New model is notably better.",
   "per_sample_breakdown": [
     {
       "question": "what are tokens?",
+      "type": "gold_standard",
+      "confidence": 0.83,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "what is natural language?",
+      "type": "gold_standard",
+      "confidence": 0.8,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "what is privacy?",
+      "type": "gold_standard",
+      "confidence": 0.82,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "What is natural language?",
+      "type": "gold_standard",
+      "confidence": 0.8,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "What is privacy?",
       "type": "gold_standard",
       "confidence": 0.83,
       "bleu": 1.0,
@@ -66,11 +102,20 @@
       "rouge1": 0.4286,
       "rouge2": 0.4074,
       "rougeL": 0.4286
+    },
+    {
+      "question": "what are embeddings?",
+      "type": "hard_negative",
+      "confidence": 0.32,
+      "bleu": 0.2641,
+      "rouge1": 0.4286,
+      "rouge2": 0.4074,
+      "rougeL": 0.4286
     }
   ],
   "recommendations": [
-    "Collect more Gold Standard data — currently only 1 samples. Aim for 50+ for reliable fine-tuning.",
-    "Collect more Hard Negative data — currently only 3 samples. Encourage users to rate poor answers 1-2 stars.",
+    "Collect more Gold Standard data — currently only 5 samples. Aim for 50+ for reliable fine-tuning.",
+    "Collect more Hard Negative data — currently only 4 samples. Encourage users to rate poor answers 1-2 stars.",
     "Model is performing well. Continue collecting user feedback to enable the next retraining cycle."
   ]
 }

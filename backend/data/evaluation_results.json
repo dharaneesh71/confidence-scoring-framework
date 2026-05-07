@@ -1,15 +1,51 @@
 {
-  "evaluated_at": "2026-05-02T18:41:51.429850",
-  "total_samples": 4,
+  "evaluated_at": "2026-05-06T19:29:28.149458",
+  "total_samples": 9,
   "averages": {
-    "bleu": 0.5988,
-    "rouge1": 0.6965,
-    "rouge2": 0.6858,
-    "rougeL": 0.6965
+    "bleu": 0.7399,
+    "rouge1": 0.8016,
+    "rouge2": 0.7945,
+    "rougeL": 0.8016
   },
   "per_sample": [
     {
       "question": "what are tokens?",
+      "type": "gold_standard",
+      "confidence": 0.83,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "what is natural language?",
+      "type": "gold_standard",
+      "confidence": 0.8,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "what is privacy?",
+      "type": "gold_standard",
+      "confidence": 0.82,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "What is natural language?",
+      "type": "gold_standard",
+      "confidence": 0.8,
+      "bleu": 1.0,
+      "rouge1": 1.0,
+      "rouge2": 1.0,
+      "rougeL": 1.0
+    },
+    {
+      "question": "What is privacy?",
       "type": "gold_standard",
       "confidence": 0.83,
       "bleu": 1.0,
@@ -30,6 +66,15 @@
       "question": "what is ocean?",
       "type": "hard_negative",
       "confidence": 0.0,
+      "bleu": 0.2641,
+      "rouge1": 0.4286,
+      "rouge2": 0.4074,
+      "rougeL": 0.4286
+    },
+    {
+      "question": "what are embeddings?",
+      "type": "hard_negative",
+      "confidence": 0.32,
       "bleu": 0.2641,
       "rouge1": 0.4286,
       "rouge2": 0.4074,

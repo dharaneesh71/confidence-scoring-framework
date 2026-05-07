@@ -1,66 +1,58 @@
 """
 ChromaDB vector database service for semantic search.
 
-PRODUCTION VERSION — All fixes applied:
+PRODUCTION VERSION — TF-IDF embedding (no PyTorch):
 ─────────────────────────────────────────────────────────────────────────────
-1. COSINE SIMILARITY FORMULA:
-   ChromaDB cosine space: distance = 1 − cos_sim, range [0, 2].
-   CORRECT: similarity = 1.0 - (distance / 2.0) → maps [0,2] → [1.0, 0.0]
+1. TFIDF EMBEDDING: Replaced SentenceTransformer (PyTorch) with sklearn
+   TfidfVectorizer. No native ML libraries — runs on any Linux node.
 
-2. DOMAIN IN CHUNK METADATA:
-   Domain stored per-chunk for direct ChromaDB filtering:
-   where={"domain": "nlp"}
+2. VECTORIZER PERSISTENCE: Fitted vectorizer saved to /app/data/ (persistent
+   volume) so vocabulary survives container restarts.
 
-3. COLLECTION-EMPTY GUARD:
-   Clear warning at startup and on every query if collection is empty.
+3. COSINE SIMILARITY: 1.0 - (distance / 2.0) — correct ChromaDB formula.
 
-4. SAFE BATCH SIZES:
-   db_batch_size=50  (was 250 — caused OOM crash on large PDFs)
-   encode batch_size=16 (was 32 — reduces peak memory per batch)
+4. DOMAIN IN METADATA: Domain stored per-chunk for direct filtering.
 
-5. DUAL-RETRIEVAL + DEDUPLICATION:
-   Searches with both normalised and original query form, merges and
-   deduplicates by text, keeping the higher similarity score.
+5. SAFE BATCH SIZES: db_batch_size=50 prevents OOM on large PDFs.
 
-6. GRACEFUL RERANKER FALLBACK:
-   Cross-encoder reranker loaded optionally — falls back cleanly if
-   unavailable without crashing the service.
+6. DUAL-RETRIEVAL + DEDUPLICATION: Normalised + original query merged.
 """
 
 import gc
+import joblib
 import logging
 import math
+import os
 import re
-import time
 from typing import Dict, List, Optional
+
 import chromadb
+import numpy as np
 from chromadb.config import Settings as ChromaSettings
-from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 from core.config import settings
 
 logger = logging.getLogger(__name__)
 
+VECTORIZER_PATH = "/app/data/tfidf_vectorizer.pkl"
+
 
 class ChromaService:
     """Manages ChromaDB vector database operations for semantic search."""
 
-    def __init__(self, embedding_model=None) -> None:
-        self.client          = None
-        self.collection      = None
-        self.embedding_model = embedding_model
-        self.reranker        = None
+    def __init__(self) -> None:
+        self.client      = None
+        self.collection  = None
+        self.vectorizer  = None
+        self._is_fitted  = False
+        self.reranker    = None
         self._initialize()
 
     # ── Initialisation ─────────────────────────────────────────────────────────
 
     def _initialize(self) -> None:
-        """
-        Initialise ChromaDB client, embedding model, collection, and
-        optional cross-encoder reranker. Retries model load up to 3 times.
-        """
         try:
-            # ── ChromaDB persistent client ─────────────────────────────────
             self.client = chromadb.PersistentClient(
                 path=settings.CHROMA_PERSIST_DIRECTORY,
                 settings=ChromaSettings(
@@ -69,25 +61,25 @@ class ChromaService:
                 ),
             )
 
-            # ── Embedding model (SentenceTransformer) ──────────────────────
-            if self.embedding_model is None:
-                logger.info("Loading embedding model...")
-                for attempt in range(1, 4):
-                    try:
-                        self.embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL_PATH)
-                        logger.info("✅ Embedding model loaded successfully")
-                        break
-                    except Exception as exc:
-                        logger.warning("Embedding model load attempt %d/3 failed: %s",attempt, exc,)
-                        if attempt < 3:
-                            logger.info("Retrying in 10 seconds…")
-                            time.sleep(10)
-                        else:
-                            logger.error("All 3 attempts failed — raising")
-                            raise
+            # ── Load or create TF-IDF vectorizer ──────────────────────────
+            if os.path.exists(VECTORIZER_PATH):
+                logger.info("Loading TF-IDF vectorizer from disk: %s", VECTORIZER_PATH)
+                self.vectorizer = joblib.load(VECTORIZER_PATH)
+                self._is_fitted = True
+                logger.info("✅ TF-IDF vectorizer loaded (vocabulary ready)")
             else:
-                logger.info("✅ Embedding model provided externally — skipping load")
-                    
+                logger.info("Creating new TF-IDF vectorizer (will fit on first upload)...")
+                self.vectorizer = TfidfVectorizer(
+                    max_features=384,
+                    ngram_range=(1, 2),
+                    sublinear_tf=True,
+                    strip_accents="unicode",
+                    analyzer="word",
+                    min_df=1,
+                )
+                self._is_fitted = False
+                logger.info("✅ TF-IDF vectorizer created — upload documents to fit")
+
             # ── ChromaDB collection ────────────────────────────────────────
             self.collection = self.client.get_or_create_collection(
                 name=settings.CHROMA_COLLECTION_NAME,
@@ -100,8 +92,7 @@ class ChromaService:
             count = self.collection.count()
             logger.info(
                 "✅ ChromaDB ready — collection='%s', chunks=%d",
-                settings.CHROMA_COLLECTION_NAME,
-                count,
+                settings.CHROMA_COLLECTION_NAME, count,
             )
             if count == 0:
                 logger.warning(
@@ -113,28 +104,27 @@ class ChromaService:
             logger.error("❌ Failed to initialise ChromaDB: %s", exc)
             raise
 
-        # ── Optional cross-encoder reranker ────────────────────────────────
-        try:
-            from sentence_transformers import CrossEncoder
-            self.reranker = CrossEncoder(
-                "cross-encoder/ms-marco-MiniLM-L-6-v2"
-            )
-            logger.info("✅ Cross-encoder reranker loaded")
-        except Exception as exc:
-            logger.warning(
-                "⚠️  Cross-encoder unavailable (%s). Reranking disabled.", exc
-            )
-            self.reranker = None
+        # Reranker disabled — no PyTorch available
+        self.reranker = None
+        logger.info("Reranker disabled (TF-IDF mode — no CrossEncoder)")
+
+    # ── Embedding helpers ──────────────────────────────────────────────────────
+
+    def _embed_text(self, text: str) -> list:
+        """Convert single text to TF-IDF vector."""
+        if not self._is_fitted:
+            return [0.0] * 384
+        return self.vectorizer.transform([text]).toarray()[0].tolist()
+
+    def _embed_texts(self, texts: List[str]) -> List[list]:
+        """Convert list of texts to TF-IDF vectors."""
+        if not self._is_fitted:
+            return [[0.0] * 384] * len(texts)
+        return self.vectorizer.transform(texts).toarray().tolist()
 
     # ── Query normalisation ────────────────────────────────────────────────────
 
     def _normalize_query(self, query: str) -> str:
-        """
-        Normalise a search query for better embedding recall.
-        1. Strip + lowercase.
-        2. Collapse word + digit:              "GPT 4"  → "gpt4"
-        3. Collapse digit + short word (≤4 c): "2 vec"  → "2vec"
-        """
         q = query.strip().lower()
         q = re.sub(r"(\w+)\s+(\d+)", r"\1\2", q)
         q = re.sub(r"(\d+)\s+([a-z]{1,4})\b", r"\1\2", q)
@@ -148,20 +138,20 @@ class ChromaService:
         top_k: int,
         where: Optional[Dict] = None,
     ) -> List[Dict]:
-        """Embed `query` and return top_k results from ChromaDB."""
+        """Embed query and return top_k results from ChromaDB."""
         count = self.collection.count()
         if count == 0:
-            logger.warning(
-                "[ChromaDB] _raw_search on empty collection — ingest docs first."
-            )
+            logger.warning("[ChromaDB] Empty collection — ingest docs first.")
             return []
 
-        query_embedding = self.embedding_model.encode(
-            [query], convert_to_tensor=False
-        )[0]
+        if not self._is_fitted:
+            logger.warning("[ChromaDB] Vectorizer not fitted — upload docs first.")
+            return []
+
+        query_embedding = self._embed_text(query)
 
         query_kwargs: Dict = {
-            "query_embeddings": [query_embedding.tolist()],
+            "query_embeddings": [query_embedding],
             "n_results":        min(top_k, count),
             "include":          ["documents", "metadatas", "distances"],
         }
@@ -173,12 +163,8 @@ class ChromaService:
 
         if results["documents"] and results["documents"][0]:
             for i, doc in enumerate(results["documents"][0]):
-                distance = results["distances"][0][i]
-
-                # FIX: ChromaDB cosine space → distance = 1 − cos_sim ∈ [0,2]
-                # CORRECT mapping: similarity = 1.0 - (distance / 2.0)
+                distance   = results["distances"][0][i]
                 similarity = max(0.0, min(1.0, 1.0 - (distance / 2.0)))
-
                 passages.append({
                     "text":             doc,
                     "metadata":         results["metadatas"][0][i],
@@ -190,8 +176,7 @@ class ChromaService:
 
         logger.debug(
             "[ChromaDB] query=%r → %d results (top sim=%.3f)",
-            query[:60],
-            len(passages),
+            query[:60], len(passages),
             passages[0]["similarity_score"] if passages else 0.0,
         )
         return passages
@@ -204,15 +189,7 @@ class ChromaService:
         top_k: int            = None,
         where: Optional[Dict] = None,
     ) -> List[Dict]:
-        """
-        Semantic search with dual-retrieval and deduplication.
-
-        1. Normalise query (lowercase + digit-compound collapse).
-        2. Search with normalised form.
-        3. If normalised ≠ original, search with original and merge.
-        4. Deduplicate by text (keep higher similarity score).
-        5. Sort descending and return top_k.
-        """
+        """Semantic search with dual-retrieval and deduplication."""
         if top_k is None:
             top_k = settings.TOP_K_RETRIEVAL
 
@@ -223,14 +200,9 @@ class ChromaService:
             passages = self._raw_search(normalised, top_k, where)
 
             if normalised != original_low:
-                logger.debug(
-                    "[ChromaDB] Dual-search: normalised=%r original=%r",
-                    normalised, original_low,
-                )
                 orig_passages = self._raw_search(original_low, top_k, where)
                 passages = passages + orig_passages
 
-            # Deduplicate — keep higher similarity score per unique text
             best: Dict[str, Dict] = {}
             for p in passages:
                 txt = p["text"]
@@ -250,7 +222,7 @@ class ChromaService:
             logger.error("Error searching ChromaDB: %s", exc)
             raise
 
-    # ── Two-stage retrieval with optional reranking ───────────────────────────
+    # ── Two-stage retrieval ────────────────────────────────────────────────────
 
     def search_with_rerank(
         self,
@@ -258,35 +230,10 @@ class ChromaService:
         top_k: int            = None,
         where: Optional[Dict] = None,
     ) -> List[Dict]:
-        """
-        Stage 1: Retrieve up to 20 broad candidates via search().
-        Stage 2: Cross-encoder rerank → return top_k.
-        Falls back to embedding-similarity ranking if reranker unavailable.
-        """
+        """Reranker disabled in TF-IDF mode — returns top_k by similarity."""
         if top_k is None:
             top_k = settings.TOP_K_RETRIEVAL
-
         candidates = self.search(query, top_k=20, where=where)
-
-        if not candidates:
-            return candidates
-
-        if self.reranker is not None:
-            try:
-                pairs  = [[query, p["text"]] for p in candidates]
-                scores = self.reranker.predict(pairs)
-                ranked = sorted(
-                    zip(candidates, scores),
-                    key=lambda x: x[1],
-                    reverse=True,
-                )
-                return [c for c, _ in ranked[:top_k]]
-            except Exception as exc:
-                logger.warning(
-                    "Reranker failed (%s) — falling back to similarity rank.",
-                    exc,
-                )
-
         return candidates[:top_k]
 
     # ── Document ingestion ────────────────────────────────────────────────────
@@ -295,36 +242,34 @@ class ChromaService:
         self,
         chunks: List[Dict],
         domain: str        = "general",
-        db_batch_size: int = 50,           # ✅ was 250 — reduced to prevent OOM
+        db_batch_size: int = 50,
     ) -> int:
         """
-        Add document chunks to ChromaDB in safe batches.
-
-        Stores `domain` in every chunk's metadata for direct filtering:
-            where={"domain": "nlp"}
-
-        Args:
-            chunks        : chunk dicts from PDFProcessor.process_pdf()
-            domain        : domain tag stored in metadata
-            db_batch_size : max chunks per ChromaDB upsert (keep ≤ 50)
-
-        Returns:
-            Total number of chunks added.
+        Add document chunks to ChromaDB.
+        Fits TF-IDF vectorizer on all texts and saves to disk.
         """
         if not chunks:
             return 0
 
         total_added  = 0
         total_chunks = len(chunks)
-        logger.info(
-            "[ChromaDB] Ingesting %d chunks (domain=%s)…",
-            total_chunks, domain,
-        )
+        logger.info("[ChromaDB] Ingesting %d chunks (domain=%s)…", total_chunks, domain)
 
         try:
-            for i in range(0, total_chunks, db_batch_size):
-                batch = chunks[i: i + db_batch_size]
+            # ── Fit vectorizer on ALL texts at once ────────────────────────
+            all_texts = [c["text"] for c in chunks]
+            logger.info("Fitting TF-IDF on %d texts...", len(all_texts))
+            self.vectorizer.fit(all_texts)
+            self._is_fitted = True
 
+            # Save fitted vectorizer to persistent volume
+            os.makedirs(os.path.dirname(VECTORIZER_PATH), exist_ok=True)
+            joblib.dump(self.vectorizer, VECTORIZER_PATH)
+            logger.info("✅ Vectorizer fitted and saved to %s", VECTORIZER_PATH)
+
+            # ── Add in batches ─────────────────────────────────────────────
+            for i in range(0, total_chunks, db_batch_size):
+                batch     = chunks[i: i + db_batch_size]
                 texts     = [c["text"] for c in batch]
                 ids       = [
                     f"{c.get('document_id', 'doc')}_{c['chunk_id']}"
@@ -348,69 +293,52 @@ class ChromaService:
                     len(texts),
                 )
 
-                # ✅ encode batch_size=16 (was 32) — reduces peak memory
-                embeddings = self.embedding_model.encode(
-                    texts,
-                    batch_size=16,
-                    show_progress_bar=False,
-                    convert_to_tensor=False,
-                )
+                embeddings = self.vectorizer.transform(texts).toarray().tolist()
 
                 self.collection.add(
-                    embeddings=embeddings.tolist(),
+                    embeddings=embeddings,
                     documents=texts,
                     metadatas=metadatas,
                     ids=ids,
                 )
 
                 total_added += len(batch)
-                del embeddings, texts
                 gc.collect()
 
                 logger.info(
-                    "[ChromaDB] Batch done — %d/%d chunks ingested.",
+                    "[ChromaDB] Batch done — %d/%d ingested.",
                     total_added, total_chunks,
                 )
 
             logger.info(
-                "✅ [ChromaDB] Successfully ingested %d chunks (domain=%s)",
+                "✅ [ChromaDB] Ingested %d chunks (domain=%s)",
                 total_added, domain,
             )
             return total_added
 
         except Exception as exc:
-            logger.error(
-                "❌ Error adding documents to ChromaDB: %s", exc
-            )
+            logger.error("❌ Error adding documents: %s", exc)
             raise
 
     # ── Utility ────────────────────────────────────────────────────────────────
 
     def delete_document(self, filename: str) -> bool:
-        """Delete all vector chunks for a given source filename."""
         try:
             self.collection.delete(where={"source": filename})
             logger.info("[ChromaDB] Deleted vectors for '%s'", filename)
             return True
         except Exception as exc:
-            logger.error(
-                "[ChromaDB] Error deleting '%s': %s", filename, exc
-            )
+            logger.error("[ChromaDB] Error deleting '%s': %s", filename, exc)
             return False
 
     def get_count(self) -> int:
-        """Return total number of chunks in the collection."""
         try:
             return self.collection.count()
         except Exception:
             return 0
 
     def is_ready(self) -> bool:
-        """Return True if ChromaDB and embedding model are both initialised."""
         try:
-            return (
-                self.collection      is not None
-                and self.embedding_model is not None
-            )
+            return self.collection is not None and self.vectorizer is not None
         except Exception:
             return False

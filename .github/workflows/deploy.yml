@@ -13,25 +13,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Download embedding model into build context
-        run: |
-          pip install sentence-transformers
-          python -c "
-          from sentence_transformers import SentenceTransformer
-          print('Downloading all-MiniLM-L6-v2...')
-          model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-          model.save('./backend/models/all-MiniLM-L6-v2')
-          print('Model saved successfully!')
-          "
-
-      - name: Verify model files
-        run: ls -la ./backend/models/all-MiniLM-L6-v2/
-
       - name: Login to VT Registry
         run: |
           docker login container.cs.vt.edu \

@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     CHROMA_COLLECTION_NAME: str   = "confidence_documents"
 
     # Embeddings
-    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-    EMBEDDING_MODEL_PATH: str = "/app/models/all-MiniLM-L6-v2"
+    EMBEDDING_MODEL: str = "tfidf"
+    EMBEDDING_MODEL_PATH: str = "" 
     # Retrieval
     TOP_K_RETRIEVAL: int = 3
 

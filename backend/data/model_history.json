@@ -22,5 +22,21 @@
     "f1_score": 0.6965,
     "loss": 0.3035,
     "path": "groq:llama-3.3-70b-versatile"
+  },
+  {
+    "version": "v4",
+    "timestamp": "2026-05-06T19:24:07.913588",
+    "accuracy": 0.6099,
+    "f1_score": 0.7024,
+    "loss": 0.2976,
+    "path": "groq:llama-3.3-70b-versatile"
+  },
+  {
+    "version": "v5",
+    "timestamp": "2026-05-06T19:29:28.151871",
+    "accuracy": 0.7399,
+    "f1_score": 0.8016,
+    "loss": 0.1984,
+    "path": "groq:llama-3.3-70b-versatile"
   }
 ]
