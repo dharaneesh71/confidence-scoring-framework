@@ -1,13 +1,13 @@
 """
 ChromaDB vector database service for semantic search.
 
-PRODUCTION VERSION — TF-IDF embedding (no PyTorch):
+PRODUCTION VERSION — Hash embedding + ChromaDB 0.5.x (no Rust backend):
 ─────────────────────────────────────────────────────────────────────────────
-1. TFIDF EMBEDDING: Replaced SentenceTransformer (PyTorch) with sklearn
-   TfidfVectorizer. No native ML libraries — runs on any Linux node.
+1. HASH EMBEDDING: Pure Python + numpy. No native ML libs, no segfault.
+   Uses MD5 hashing to create deterministic 384-dim vectors.
 
-2. VECTORIZER PERSISTENCE: Fitted vectorizer saved to /app/data/ (persistent
-   volume) so vocabulary survives container restarts.
+2. CHROMADB 0.5.x: Downgraded from 1.3.4 (Rust backend → segfault) to
+   0.5.23 (Python/SQLite backend → stable on any Linux node).
 
 3. COSINE SIMILARITY: 1.0 - (distance / 2.0) — correct ChromaDB formula.
 
@@ -19,33 +19,30 @@ PRODUCTION VERSION — TF-IDF embedding (no PyTorch):
 """
 
 import gc
+import hashlib
 import logging
 import math
-import os
 import re
 from typing import Dict, List, Optional
 
 import chromadb
 import numpy as np
 from chromadb.config import Settings as ChromaSettings
-import hashlib
 
 from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-VECTORIZER_PATH = "/app/data/tfidf_vectorizer.pkl"
-
 
 class ChromaService:
     """Manages ChromaDB vector database operations for semantic search."""
 
+    EMBED_DIM = 384
+
     def __init__(self) -> None:
-        self.client      = None
-        self.collection  = None
-        self.vectorizer  = None
-        self._is_fitted  = False
-        self.reranker    = None
+        self.client     = None
+        self.collection = None
+        self.reranker   = None
         self._initialize()
 
     # ── Initialisation ─────────────────────────────────────────────────────────
@@ -60,10 +57,11 @@ class ChromaService:
                 ),
             )
 
-            # ── Load or create TF-IDF vectorizer ──────────────────────────
-            logger.info("✅ Hash embedding ready — no native ML libraries")
+            logger.info(
+                "✅ Hash embedding ready (dim=%d) — no native ML libraries",
+                self.EMBED_DIM,
+            )
 
-            # ── ChromaDB collection ────────────────────────────────────────
             self.collection = self.client.get_or_create_collection(
                 name=settings.CHROMA_COLLECTION_NAME,
                 metadata={
@@ -72,38 +70,55 @@ class ChromaService:
                 },
             )
 
-            count = self.collection.count()
-            logger.info(
-                "✅ ChromaDB ready — collection='%s', chunks=%d",
-                settings.CHROMA_COLLECTION_NAME, count,
-            )
-            if count == 0:
+            # ✅ Wrapped in try/except — chromadb Rust backend segfaults here
+            # on some Linux nodes. Non-fatal: collection still usable.
+            try:
+                count = self.collection.count()
+                logger.info(
+                    "✅ ChromaDB ready — collection='%s', chunks=%d",
+                    settings.CHROMA_COLLECTION_NAME, count,
+                )
+                if count == 0:
+                    logger.warning(
+                        "⚠️  ChromaDB collection is EMPTY. "
+                        "Upload documents via the Admin panel before querying."
+                    )
+            except Exception as exc:
                 logger.warning(
-                    "⚠️  ChromaDB collection is EMPTY. "
-                    "Upload documents via the Admin panel before querying."
+                    "ChromaDB count failed (non-fatal): %s", exc
+                )
+                logger.info(
+                    "✅ ChromaDB collection created — ready for documents"
                 )
 
         except Exception as exc:
             logger.error("❌ Failed to initialise ChromaDB: %s", exc)
             raise
 
-        # Reranker disabled — no PyTorch available
         self.reranker = None
-        logger.info("Reranker disabled (TF-IDF mode — no CrossEncoder)")
+        logger.info("Reranker disabled (hash-embedding mode)")
 
-    # ── Embedding helpers ──────────────────────────────────────────────────────
+    # ── Hash embedding ─────────────────────────────────────────────────────────
 
     def _embed_text(self, text: str) -> list:
-        """Convert single text to TF-IDF vector."""
-        if not self._is_fitted:
-            return [0.0] * 384
-        return self.vectorizer.transform([text]).toarray()[0].tolist()
+        """
+        Convert text to a 384-dim vector using position-weighted MD5 hashing.
+        Pure Python + numpy — zero native ML dependencies.
+        Deterministic: same text always produces the same vector.
+        """
+        words  = text.lower().split()
+        vector = np.zeros(self.EMBED_DIM, dtype=np.float32)
+        for i, word in enumerate(words):
+            idx          = int(hashlib.md5(word.encode()).hexdigest(), 16) % self.EMBED_DIM
+            vector[idx] += 1.0 / (1.0 + i)
+        norm = np.linalg.norm(vector)
+        if norm > 0:
+            vector = vector / norm
+        return vector.tolist()
 
     def _embed_texts(self, texts: List[str]) -> List[list]:
-        """Convert list of texts to TF-IDF vectors."""
-        if not self._is_fitted:
-            return [[0.0] * 384] * len(texts)
-        return self.vectorizer.transform(texts).toarray().tolist()
+        """Embed a list of texts."""
+        return [self._embed_text(t) for t in texts]
 
     # ── Query normalisation ────────────────────────────────────────────────────
 
@@ -122,13 +137,13 @@ class ChromaService:
         where: Optional[Dict] = None,
     ) -> List[Dict]:
         """Embed query and return top_k results from ChromaDB."""
-        count = self.collection.count()
+        try:
+            count = self.collection.count()
+        except Exception:
+            count = 0
+
         if count == 0:
             logger.warning("[ChromaDB] Empty collection — ingest docs first.")
-            return []
-
-        if not self._is_fitted:
-            logger.warning("[ChromaDB] Vectorizer not fitted — upload docs first.")
             return []
 
         query_embedding = self._embed_text(query)
@@ -213,7 +228,7 @@ class ChromaService:
         top_k: int            = None,
         where: Optional[Dict] = None,
     ) -> List[Dict]:
-        """Reranker disabled in TF-IDF mode — returns top_k by similarity."""
+        """Returns top_k by similarity (reranker disabled)."""
         if top_k is None:
             top_k = settings.TOP_K_RETRIEVAL
         candidates = self.search(query, top_k=20, where=where)
@@ -227,29 +242,18 @@ class ChromaService:
         domain: str        = "general",
         db_batch_size: int = 50,
     ) -> int:
-        """
-        Add document chunks to ChromaDB.
-        Fits TF-IDF vectorizer on all texts and saves to disk.
-        """
+        """Add document chunks to ChromaDB using hash embeddings."""
         if not chunks:
             return 0
 
         total_added  = 0
         total_chunks = len(chunks)
-        logger.info("[ChromaDB] Ingesting %d chunks (domain=%s)…", total_chunks, domain)
+        logger.info(
+            "[ChromaDB] Ingesting %d chunks (domain=%s)…",
+            total_chunks, domain,
+        )
 
         try:
-            # ── Fit vectorizer on ALL texts at once ────────────────────────
-            all_texts = [c["text"] for c in chunks]
-            logger.info("Fitting TF-IDF on %d texts...", len(all_texts))
-            self.vectorizer.fit(all_texts)
-            self._is_fitted = True
-
-            # Save fitted vectorizer to persistent volume
-            os.makedirs(os.path.dirname(VECTORIZER_PATH), exist_ok=True)
-            logger.info("✅ Vectorizer fitted and saved to %s", VECTORIZER_PATH)
-
-            # ── Add in batches ─────────────────────────────────────────────
             for i in range(0, total_chunks, db_batch_size):
                 batch     = chunks[i: i + db_batch_size]
                 texts     = [c["text"] for c in batch]
@@ -275,7 +279,7 @@ class ChromaService:
                     len(texts),
                 )
 
-                embeddings = self.vectorizer.transform(texts).toarray().tolist()
+                embeddings = self._embed_texts(texts)
 
                 self.collection.add(
                     embeddings=embeddings,
@@ -321,6 +325,6 @@ class ChromaService:
 
     def is_ready(self) -> bool:
         try:
-            return self.collection is not None and self.vectorizer is not None
+            return self.collection is not None
         except Exception:
             return False

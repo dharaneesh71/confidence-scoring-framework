@@ -44,6 +44,10 @@ spec:
               value: '1'
             - name: HF_DATASETS_OFFLINE
               value: '1'
+            - name: OPENBLAS_CORETYPE
+              value: "HASWELL"
+            - name: PYTHONFAULTHANDLER
+              value: "1"
           envFrom:
             - secretRef:
                 name: confidai-env
